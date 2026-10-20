@@ -1026,7 +1026,7 @@
         }
       }
       if (B.sosSince && now - B.sosSince > 1500) fire('sos', 'SOS_GESTURE', 1500, 20000, 'إشارة استغاثة يدوية', 'CRITICAL');
-      if (B.fallSince && now - B.fallSince > 2000) fire('fall', 'FALL', 2000, 30000, 'سقوط / شخص على الأرض', 'CRITICAL');
+      if (B.fallSince && now - B.fallSince > 1200) fire('fall', 'FALL', 1200, 30000, 'سقوط / شخص على الأرض', 'CRITICAL');
       if (B.ergoSince && now - B.ergoSince > 3000) fire('ergo', 'ERGONOMIC_RISK', 3000, 30000, 'وضعية عمل خطرة (انحناء الظهر)', 'LOW');
       if (B.present && B.absentSince && now - B.absentSince > LAB.stationSec * 1000) { fire('station', 'UNATTENDED_STATION', 0, 30000, 'ماكينة بدون مشغّل', 'MEDIUM'); B.present = false; }
     }

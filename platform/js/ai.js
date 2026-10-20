@@ -429,7 +429,7 @@
     }
     var bw = p.x2 - p.x1, bh = p.y2 - p.y1;
     // fall / person down: horizontal torso or wide-low box with hips near shoulders' height
-    if ((res.trunkAngle != null && res.trunkAngle > 65) || (bw > bh * 1.25 && hip && sho && Math.abs(hip.y - sho.y) < bh * 0.35)) res.fall = true;
+    if ((res.trunkAngle != null && res.trunkAngle > 58) || (bw > bh * 1.2 && (!(hip && sho) || Math.abs(hip.y - sho.y) < bh * 0.4))) res.fall = true;
     // ergonomic risk (RULA-inspired, simplified): trunk flexion + arm elevation
     if (res.trunkAngle != null) {
       var score = res.trunkAngle < 10 ? 1 : res.trunkAngle < 25 ? 2 : res.trunkAngle < 45 ? 3 : 4;
