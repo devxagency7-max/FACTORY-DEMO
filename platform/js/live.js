@@ -369,7 +369,8 @@
     if (key === matcherKey) return matcherCache;
     matcherKey = key;
     var labeled = Object.keys(FACES).filter(function (k) { return FACES[k].length; }).map(function (k) { return new faceapi.LabeledFaceDescriptors(k, FACES[k].map(function (d) { return new Float32Array(d); })); });
-    matcherCache = labeled.length ? new faceapi.FaceMatcher(labeled, 0.52) : null;
+    // 0.46: stricter so a blurry/tiny face is marked "unknown" instead of guessed as the wrong employee
+    matcherCache = labeled.length ? new faceapi.FaceMatcher(labeled, 0.46) : null;
     return matcherCache;
   }
   function detectFaces(src) {
@@ -527,10 +528,10 @@
   var PPE_AR = { helmet: 'الخوذة', glasses: 'نظارة الوقاية', vest: 'السترة العاكسة', gloves: 'القفازات', ears: 'سماعات الأذن' };
   var PPE_EN = { helmet: 'NO HELMET', glasses: 'NO GLASSES', vest: 'NO VEST', gloves: 'NO GLOVES', ears: 'NO EAR PROTECTION' };
   var PPE_SUB = { helmet: 'HARD HAT', glasses: 'SAFETY GLASSES', vest: 'HI-VIS VEST', gloves: 'SAFETY GLOVES · لما الإيدين تبان', ears: 'EAR MUFFS · ضوضاء المكن' };
-  var LAB = { mode: 'ppe', mirror: true, sound: true, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ppeEngine: 'browser' };
+  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ppeEngine: 'browser' };
   try { Object.assign(LAB, JSON.parse(localStorage.getItem('egic-lab') || '{}')); } catch (e) { }
   LAB.required = { helmet: true, glasses: true, vest: true, gloves: true, ears: true }; // PPE always checks the full set
-  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
+  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
 
   U.register('live', function (v) {
     var st = { running: false, stream: null, src: null, srcKind: null, busy: false, last: null, pose: null, fps: 0, ms: 0, frames: 0, fpsT: performance.now(), tracker: null, lastFace: 0, faces: [], captures: [], behavior: { sosSince: 0, fallSince: 0, ergoSince: 0, absentSince: 0, present: false, cool: {} }, flip: 0, destroyed: false };
@@ -583,7 +584,8 @@
       h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), stopBtn, camSel,
       h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.mirror, onchange: function (e) { LAB.mirror = e.target.checked; saveLab(); } }), 'عكس الصورة'),
-      h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.sound, onchange: function (e) { LAB.sound = e.target.checked; saveLab(); } }), 'تنبيه صوتي'));
+      h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.sound, onchange: function (e) { LAB.sound = e.target.checked; saveLab(); } }), 'تنبيه صوتي'),
+      h('label', { class: 'switch', title: 'الكاميرا تلحق الوش/الشخص وتزوّم تلقائيًا، وتلف ناحية أي مخالفة أو خطر (كاميرات IP المتحركة فقط)' }, h('input', { type: 'checkbox', checked: LAB.autoTrack, onchange: function (e) { LAB.autoTrack = e.target.checked; saveLab(); if (ptzEl) ptzEl.style.opacity = LAB.autoTrack ? '0.5' : '1'; } }), '🎯 تتبّع تلقائي'));
     var engSel = U.select([['browser', 'محرك الذكاء: داخل الجهاز (المتصفح)'], ['titan', 'محرك الذكاء: خادم EGIC AI (Python)']], LAB.ppeEngine, function (x) { LAB.ppeEngine = x; saveLab(); st.tracker = null; prepareModels(); renderSide(); });
     var reqRow = h('div', { class: 'lab-controls' }, engSel, h('span', { class: 'muted', style: { fontSize: '12px' }, text: 'فحص PPE: ' + PPE_KEYS.map(function (k) { return PPE_AR[k]; }).join(' · ') }),
       h('span', { class: 'muted', style: { fontSize: '12px', marginInlineStart: 'auto' }, text: 'مهلة المحطة (ث):' }), h('input', { class: 'input', type: 'number', min: 3, max: 120, value: LAB.stationSec, style: { width: '70px', height: '30px' }, onchange: function (e) { LAB.stationSec = Math.max(3, +e.target.value || 8); saveLab(); } }));
@@ -766,7 +768,28 @@
         gap(), ptzBtn('▲', 'up', 'أعلى'), gap(),
         ptzBtn('◀', 'left', 'يسار'), ptzBtn('■', 'stop', 'إيقاف الحركة'), ptzBtn('▶', 'right', 'يمين'),
         ptzBtn('＋', 'zoomin', 'تقريب'), ptzBtn('▼', 'down', 'أسفل'), ptzBtn('－', 'zoomout', 'إبعاد'));
+      if (LAB.autoTrack) ptzEl.style.opacity = '0.5';
       stage.appendChild(ptzEl);
+    }
+    // AI-driven PTZ: keep the subject centred and well-sized, and swing toward any violation / hazard when it fires
+    function autoTrackTick(d, now) {
+      if (!LAB.autoTrack || st.srcKind !== 'ipcam' || !st.ipcam || !ptzOk) return;
+      if (now - (st.ptzAt || 0) < 650) return; // PTZ is slow — don't spam it
+      var target = null, th = 0, band;
+      if (st.alertTarget && now - st.alertTarget.t < 5000) { target = st.alertTarget.box; th = target.y2 - target.y1; band = [0.34, 0.82]; }       // 1) a fresh violation / hazard wins
+      if (!target && st.faces && st.faces.length) { st.faces.forEach(function (f) { var hh = f.box.y2 - f.box.y1; if (hh > th) { th = hh; target = f.box; } }); if (target) band = [0.16, 0.42]; } // 2) the biggest face → zoom to recognise it
+      if (!target && st.last && st.last.tracks) { st.last.tracks.forEach(function (t) { if (t.seen !== st.last.t) return; var hh = t.box.y2 - t.box.y1; if (hh > th) { th = hh; target = t.box; } }); if (target) band = [0.42, 0.85]; } // 3) the biggest person
+      if (!target && st.pose && st.pose.poses) { st.pose.poses.forEach(function (p) { var hh = p.y2 - p.y1; if (hh > th) { th = hh; target = p; } }); if (target) band = [0.42, 0.85]; }
+      if (!target) return; // nothing in view → hold position
+      var ex = ((target.x1 + target.x2) / 2) / d.w - 0.5, ey = ((target.y1 + target.y2) / 2) / d.h - 0.5;
+      var ax = Math.abs(ex), ay = Math.abs(ey), dz = 0.12, act = null;
+      if (ax > dz && ax >= ay) act = ex > 0 ? 'right' : 'left';
+      else if (ay > dz) act = ey > 0 ? 'down' : 'up';
+      else { var frac = th / d.h; if (frac < band[0]) act = 'zoomin'; else if (frac > band[1]) act = 'zoomout'; }
+      if (!act) return;
+      st.ptzAt = now;
+      var ms = (act === 'zoomin' || act === 'zoomout') ? 260 : Math.round(Math.min(600, Math.max(170, Math.max(ax, ay) * 1500)));
+      adminPost('ipcams/' + st.ipcam.id + '/ptz', { act: act, ms: ms, speed: 0.5 }).then(function (r) { if (r && r.ok === false && ptzOk) { ptzOk = false; U.toast('التتبّع التلقائي غير متاح', r.error || '', { kind: 'critical', ms: 6000 }); } }).catch(function () { });
     }
     function camId() { return st.srcKind === 'ipcam' && st.ipcam ? st.ipcam.id : 'P01-CAM-LIVE'; }
     function camName() { return st.srcKind === 'ipcam' && st.ipcam ? st.ipcam.name : (S.cams['P01-CAM-LIVE'] || {}).name || 'كاميرا العرض'; }
@@ -822,6 +845,7 @@
           infer(d).then(function () { st.busy = false; }, function (e) { console.error(e); st.busy = false; });
         }
         kickFace(d, now, canvasSrc);
+        autoTrackTick(d, now);
         drawOverlay(g, d, mir);
       }
       if (st.srcKind === 'image') { setTimeout(function () { requestAnimationFrame(loop); }, 120); } else requestAnimationFrame(loop);
@@ -836,8 +860,12 @@
       var fsrc = st.src;
       detectFaces(fsrc).then(function (faces) {
         st.faces = faces; st.facesT = Date.now();
-        if (st.tracker) st.faces.forEach(function (f) { st.tracker.assignIdentity(f.box, f.label === 'unknown' ? '__unknown__' : f.label, 1 - f.dist); });
-        if (st.srcKind !== 'image' && st.srcKind !== 'video') sighter.feed(faces, fsrc); // a recognised face also marks attendance
+        // only trust a face big enough to be reliable for identity — tiny far faces cause wrong matches
+        var minH = Math.max(46, d.h * 0.07);
+        var good = faces.filter(function (f) { return (f.box.y2 - f.box.y1) >= minH; });
+        // each recognised face is assigned to its OWN person track, so several employees are identified at once
+        if (st.tracker) good.forEach(function (f) { st.tracker.assignIdentity(f.box, f.label === 'unknown' ? '__unknown__' : f.label, 1 - f.dist); });
+        if (st.srcKind !== 'image' && st.srcKind !== 'video') sighter.feed(good, fsrc); // a clear recognised face also marks attendance
       }).catch(function () { }).then(function () { st.faceBusy = false; });
     }
 
@@ -904,6 +932,7 @@
       var coolKey = wid || ('track-' + track.id), tnow = Date.now();
       items = items.filter(function (k) { var kk = coolKey + ':' + k; if (workerCool[kk] && tnow - workerCool[kk] < 30000) return false; workerCool[kk] = tnow; return true; });
       if (!items.length) return;
+      st.alertTarget = { box: track.box, t: performance.now() }; // auto-track swings to the PPE violation
       var title = 'EGIC · ' + camName() + ' · ' + nowStr();
       var imgUrl = snapshot(function (g) {
         var fs = Math.max(14, Math.round(d.w / 55));
@@ -953,6 +982,7 @@
     }
     function raiseHazard(k, dets, d) {
       var R = HZ_RULE[k], best = dets.slice().sort(function (a, b) { return b.score - a.score; })[0];
+      if (best) st.alertTarget = { box: best, t: performance.now() }; // auto-track swings the camera to the hazard
       var col = k === 'fire' ? '#ff3b1f' : k === 'smoke' ? '#c9d1d9' : '#ffb000';
       var imgUrl = snapshot(function (g) {
         var fs = Math.max(14, Math.round(d.w / 55)), lw = Math.max(3, d.w / 300);
@@ -983,6 +1013,8 @@
       function fire(key, type, ms, cool, text, sev) {
         if (!B.cool[key] || now - B.cool[key] > cool) {
           B.cool[key] = now;
+          if (primary && type !== 'UNATTENDED_STATION') st.alertTarget = { box: primary, t: performance.now() }; // auto-track swings to the fall/SOS
+
           var wid = LAB.idMode === 'fixed' || !hasFaces() ? LAB.profileId : (st.tracker && st.tracker.tracks[0] && st.tracker.tracks[0].identity) || LAB.profileId;
           var imgUrl = snapshot(function (g) { drawPoses(g, poses, d, false, true); if (type === 'UNATTENDED_STATION') drawRoi(g, roi, true, d); }, d, 'EGIC · ' + text + ' · ' + nowStr());
           st.captures.unshift({ img: imgUrl, title: text + ' · ' + U.fTime(now) }); renderCaptures();
