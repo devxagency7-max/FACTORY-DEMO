@@ -885,6 +885,7 @@
         var vio = st.tracker.update(people, now);
         st.last = { dets: dets, people: people, tracks: st.tracker.tracks.slice(), t: now };
         vio.forEach(function (x) { reportPPE(x.track, x.items, d); });
+        checkPersonFall(people, d, now); // fall from the person box — works even when the pose skeleton can't read a lying body
       }, function (e) {
         if (!titan) throw e;
         serverErr(e);
@@ -979,6 +980,32 @@
         var hits = w.filter(Boolean).length;
         if (groups[k].length && hits >= R.need && (!st.hz.cool[k] || now - st.hz.cool[k] > R.cool)) { st.hz.cool[k] = now; raiseHazard(k, groups[k], d); }
       });
+    }
+    // Fall from the PERSON box (any mode with the PPE/person detector): a clearly horizontal body on the ground
+    function checkPersonFall(people, d, now) {
+      var B = st.behavior;
+      var down = (people || []).filter(function (p) { var b = p.box; return (b.x2 - b.x1) > (b.y2 - b.y1) * 1.5 && (b.y2 - b.y1) > d.h * 0.07; });
+      if (down.length) { if (!B.pfallSince) B.pfallSince = now; } else B.pfallSince = 0;
+      if (B.pfallSince && now - B.pfallSince > 1200 && (!B.cool.fall || now - B.cool.fall > 30000)) {
+        B.cool.fall = now;
+        var big = down.sort(function (a, b) { return (b.box.x2 - b.box.x1) * (b.box.y2 - b.box.y1) - (a.box.x2 - a.box.x1) * (a.box.y2 - a.box.y1); })[0];
+        raiseFall(big.box, d);
+      }
+    }
+    function raiseFall(box, d) {
+      st.alertTarget = { box: box, t: performance.now() };
+      var wid = (LAB.idMode === 'fixed' || !hasFaces()) ? LAB.profileId : (st.tracker && st.tracker.tracks[0] && st.tracker.tracks[0].identity) || null;
+      var imgUrl = snapshot(function (g) {
+        var fs = Math.max(14, Math.round(d.w / 55));
+        g.setLineDash([]); g.strokeStyle = COL.bad; g.lineWidth = Math.max(3, d.w / 300); g.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+        label(g, box.x1, box.y1, '🚑 سقوط / شخص على الأرض', 'rgba(170,20,20,.94)', fs);
+      }, d, 'EGIC · سقوط / شخص على الأرض · ' + nowStr());
+      st.captures.unshift({ img: imgUrl, title: 'سقوط · ' + U.fTime(Date.now()) }); renderCaptures();
+      stage.classList.remove('is-alert'); void stage.offsetWidth; stage.classList.add('is-alert');
+      if (LAB.sound) beep('sos');
+      var body = { type: 'FALL', workerId: wid, cameraId: camId(), conf: 0.9, source: 'live-pose', sev: 'CRITICAL', evidence: { kind: 'live', image: imgUrl, model: 'Fall (person box)' }, note: 'شخص في وضع أفقي على الأرض' };
+      var fb = { type: 'FALL', ts: Date.now(), sev: 'CRITICAL', cameraId: body.cameraId, conf: 0.9, evidence: {}, incident: 'FALL-' + Date.now().toString(36) };
+      API.post('events', body).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: imgUrl }); U.toast('🚑 سقوط شخص', ev.siteName + ' · ' + U.fTime(ev.ts), { kind: 'critical', img: imgUrl, action: ['عرض', function () { U.openEvent(ev); }] }); }, function () { if (window.EGICAlarm) window.EGICAlarm.show(fb, { img: imgUrl }); });
     }
     function raiseHazard(k, dets, d) {
       var R = HZ_RULE[k], best = dets.slice().sort(function (a, b) { return b.score - a.score; })[0];
