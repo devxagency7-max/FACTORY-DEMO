@@ -373,10 +373,10 @@
     matcherCache = labeled.length ? new faceapi.FaceMatcher(labeled, 0.46) : null;
     return matcherCache;
   }
-  function detectFaces(src) {
+  function detectFaces(src, size) {
     var m = matcher(); if (!m) return Promise.resolve([]);
-    // inputSize 512 + lower score threshold → catches smaller / farther faces so identity (and so the violation) lands on the right worker
-    return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.42 })).withFaceLandmarks(true).withFaceDescriptors().then(function (res) {
+    // inputSize caller-tunable (smaller = faster on weak GPUs); lower score threshold catches smaller / farther faces
+    return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: size || 512, scoreThreshold: 0.42 })).withFaceLandmarks(true).withFaceDescriptors().then(function (res) {
       return res.map(function (r) { var best = m.findBestMatch(r.descriptor), b = r.detection.box; return { box: { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }, label: best.label, dist: best.distance }; });
     });
   }
@@ -595,10 +595,34 @@
 
     // ---------- side panel ----------
     var idCard, ppeRows = {}, verdict, timerBar, behav, caps, modelChips, idSel, hzList;
+    function liveSrcFn() { return st.srcKind && st.srcKind !== 'image' ? function () { return st.src; } : null; }
+    // handle ALL employees from the live screen: see everyone + enrol any of them straight from the running camera
+    function allEmployeesPanel() {
+      var list = h('div', { style: { display: 'grid', gap: '8px', maxHeight: '55vh', overflow: 'auto' } });
+      function load() {
+        API.get('workers', { limit: 1000 }).then(function (r) {
+          clear(list);
+          if (!r.items.length) { list.appendChild(h('div', { class: 'muted', style: { fontSize: '12.5px' }, text: 'لا يوجد موظفون بعد — أضفهم من «الموظفون والملفات».' })); return; }
+          r.items.forEach(function (w) {
+            list.appendChild(h('div', { style: { display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: '10px', alignItems: 'center', padding: '8px 10px', borderRadius: '10px', background: 'var(--bg-3)', border: '1px solid var(--line-1)' } },
+              h('span', { style: { width: '34px', height: '34px', borderRadius: '9px', overflow: 'hidden', background: 'var(--bg-4)', display: 'grid', placeItems: 'center', fontWeight: '700', fontSize: '11px', flex: 'none' } }, w.photo ? h('img', { src: API.evidenceUrl(w.photo), alt: '', style: { width: '100%', height: '100%', objectFit: 'cover' } }) : U.initials(w.name)),
+              h('div', { style: { minWidth: 0 } }, h('b', { text: w.name }), h('div', { class: 'mono muted', style: { fontSize: '11px' }, text: w.id + ' · ' + w.dept })),
+              w.enrolled ? h('button', { class: 'btn btn--xs btn--ghost', title: 'إعادة تسجيل الوجه', onclick: function () { enrollDialog(w.id, function () { loadFaces(); allEmployeesPanel(); }, liveSrcFn()); } }, '✓ وجه مسجل') : h('button', { class: 'btn btn--xs btn--accent', onclick: function () { enrollDialog(w.id, function () { loadFaces(); allEmployeesPanel(); }, liveSrcFn()); } }, 'سجّل وجهه')));
+          });
+        });
+      }
+      U.openModal('👥 كل الموظفين', h('div', { style: { display: 'grid', gap: '10px' } },
+        h('div', { class: 'muted', style: { fontSize: '12.5px', lineHeight: '1.8' }, text: 'كل الموظفين وحالة بصمة الوجه. سجّل وجه أي موظف مباشرة من الكاميرا الشغّالة دلوقتي (خلي الموظف قريب وواضح قدام الكاميرا) — وبعدها النظام هيتعرف عليه تلقائيًا ويسجّل حضوره ومخالفاته.' }),
+        list,
+        h('a', { class: 'btn btn--sm', href: '#/workers', onclick: U.closeModal }, U.icon('userplus'), '+ إضافة / إدارة الموظفين')));
+      load();
+    }
     function renderSide() {
       clear(side);
       // identity
-      var c1 = U.card('الهوية', { icon: 'workers', actions: [h('button', { class: 'btn btn--xs', onclick: function () { enrollDialog(LAB.profileId, renderSide, st.srcKind && st.srcKind !== 'image' ? function () { return st.src; } : null); } }, U.icon('userplus'), 'تسجيل وجه')] });
+      var c1 = U.card('الهوية', { icon: 'workers', actions: [
+        h('button', { class: 'btn btn--xs', onclick: allEmployeesPanel }, U.icon('workers'), 'كل الموظفين'),
+        h('button', { class: 'btn btn--xs', onclick: function () { enrollDialog(LAB.profileId, renderSide, liveSrcFn()); } }, U.icon('userplus'), 'تسجيل وجه')] });
       idCard = h('div', { class: 'idcard' }, h('div', { class: 'ph', id: 'idPh', text: '?' }), h('div', null, h('b', { id: 'idName', text: '—' }), h('span', { id: 'idSub', text: 'بانتظار ظهور شخص' })));
       idSel = U.select([['auto', 'تعرّف تلقائي بالوجه'], ['fixed', 'ربط بملف محدد']], LAB.idMode, function (x) { LAB.idMode = x; saveLab(); profSel.style.display = x === 'fixed' || !hasFaces() ? '' : 'none'; });
       var profSel = h('select', { class: 'select' });
@@ -858,7 +882,8 @@
       st.lastFaceT = now; st.faceBusy = true;
       if (canvasSrc) st.src = phoneFrame(st, phoneImg) || st.src;
       var fsrc = st.src;
-      detectFaces(fsrc).then(function (faces) {
+      var fsize = (st.inferEMA || 0) > 200 ? 320 : (st.inferEMA || 0) > 110 ? 416 : 512; // smaller face net on slow devices
+      detectFaces(fsrc, fsize).then(function (faces) {
         st.faces = faces; st.facesT = Date.now();
         // only trust a face big enough to be reliable for identity — tiny far faces cause wrong matches
         var minH = Math.max(46, d.h * 0.07);
@@ -930,8 +955,11 @@
     var workerCool = {};
     function reportPPE(track, items, d) {
       var wid = resolveWorker(track);
-      var coolKey = wid || ('track-' + track.id), tnow = Date.now();
-      items = items.filter(function (k) { var kk = coolKey + ':' + k; if (workerCool[kk] && tnow - workerCool[kk] < 30000) return false; workerCool[kk] = tnow; return true; });
+      // unknown people churn track ids → key their cooldown by a coarse screen cell (not the id) so we don't spam the same violation
+      var tnow = Date.now();
+      var coolKey = wid || ('u' + Math.round(((track.box.x1 + track.box.x2) / 2) / 140) + '_' + Math.round(((track.box.y1 + track.box.y2) / 2) / 140));
+      var coolMs = wid ? 30000 : 45000;
+      items = items.filter(function (k) { var kk = coolKey + ':' + k; if (workerCool[kk] && tnow - workerCool[kk] < coolMs) return false; workerCool[kk] = tnow; return true; });
       if (!items.length) return;
       st.alertTarget = { box: track.box, t: performance.now() }; // auto-track swings to the PPE violation
       var title = 'EGIC · ' + camName() + ' · ' + nowStr();
