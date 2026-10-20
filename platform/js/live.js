@@ -743,8 +743,30 @@
       prepareModels();
       st.srcKind = 'ipcam';
       attachIpCam(src, phoneImg, st, function (err) { U.toast('مشكلة في كاميرا IP: ' + src.name, err || 'انقطع البث — السيرفر بيحاول يعيد الاتصال', { kind: 'critical', ms: 8000 }); })
-        .then(function () { if (st.srcKind !== 'ipcam') return; st.src = phoneFrame(st, phoneImg); st.running = true; st.tracker = null; loop(); })
+        .then(function () { if (st.srcKind !== 'ipcam') return; st.src = phoneFrame(st, phoneImg); st.running = true; st.tracker = null; showPtz(src.id); loop(); })
         .catch(function (e) { if (st.srcKind !== 'ipcam') return; stopSources(); empty.classList.remove('hidden'); U.toast('تعذر تشغيل كاميرا IP', e.message, { kind: 'critical', ms: 9000 }); });
+    }
+    // PTZ pad: control a moving / zoomable camera from the platform (ONVIF, via the server). Shows only for IP cameras that accept it.
+    var ptzEl = null, ptzOk = true;
+    function hidePtz() { if (ptzEl) { ptzEl.remove(); ptzEl = null; } }
+    function ptzBtn(label, act, title) {
+      var b = h('button', { type: 'button', title: title || '', style: { width: '40px', height: '40px', borderRadius: '10px', border: '1px solid rgba(255,255,255,.22)', background: 'rgba(10,20,16,.74)', color: '#fff', fontSize: '16px', cursor: 'pointer', display: 'grid', placeItems: 'center', touchAction: 'none', userSelect: 'none' } }, label);
+      var moving = false;
+      function send(a, ms) { return adminPost('ipcams/' + (st.ipcam && st.ipcam.id) + '/ptz', { act: a, ms: ms }); }
+      function go(e) { if (e) e.preventDefault(); if (moving || !st.ipcam) return; moving = true; b.style.background = 'rgba(247,146,36,.85)'; send(act, 4000).then(function (r) { if (r && r.ok === false && ptzOk) { ptzOk = false; U.toast('التحكم في الكاميرا غير متاح', r.error || '', { kind: 'critical', ms: 7000 }); hidePtz(); } }).catch(function () { }); }
+      function stop() { if (!moving) return; moving = false; b.style.background = 'rgba(10,20,16,.74)'; send('stop', 0).catch(function () { }); }
+      b.addEventListener('pointerdown', go);
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (t) { b.addEventListener(t, stop); });
+      return b;
+    }
+    function showPtz(camId) {
+      hidePtz(); if (!ptzOk) return;
+      var gap = function () { return h('span'); };
+      ptzEl = h('div', { style: { position: 'absolute', insetInlineEnd: '12px', bottom: '46px', display: 'grid', gridTemplateColumns: 'repeat(3, 40px)', gap: '5px', padding: '8px', borderRadius: '13px', background: 'rgba(0,0,0,.38)', zIndex: '7' } },
+        gap(), ptzBtn('▲', 'up', 'أعلى'), gap(),
+        ptzBtn('◀', 'left', 'يسار'), ptzBtn('■', 'stop', 'إيقاف الحركة'), ptzBtn('▶', 'right', 'يمين'),
+        ptzBtn('＋', 'zoomin', 'تقريب'), ptzBtn('▼', 'down', 'أسفل'), ptzBtn('－', 'zoomout', 'إبعاد'));
+      stage.appendChild(ptzEl);
     }
     function camId() { return st.srcKind === 'ipcam' && st.ipcam ? st.ipcam.id : 'P01-CAM-LIVE'; }
     function camName() { return st.srcKind === 'ipcam' && st.ipcam ? st.ipcam.name : (S.cams['P01-CAM-LIVE'] || {}).name || 'كاميرا العرض'; }
@@ -762,7 +784,7 @@
         img.src = st.url;
       }
     }
-    function stopSources() { if (st.srcKind === 'phone' || st.srcKind === 'ipcam') detachPhone(st, phoneVid, phoneImg); st.ipcam = null; st.running = false; stopStream(st.stream); st.stream = null; try { video.pause(); } catch (e) { } video.removeAttribute('src'); video.srcObject = null; if (st.url) { URL.revokeObjectURL(st.url); st.url = null; } st.srcKind = null; st.last = null; st.pose = null; st.startedAt = 0; st.inferEMA = 0; st.lastInfer = 0; st.lastFaceT = 0; st.faces = []; }
+    function stopSources() { hidePtz(); if (st.srcKind === 'phone' || st.srcKind === 'ipcam') detachPhone(st, phoneVid, phoneImg); st.ipcam = null; st.running = false; stopStream(st.stream); st.stream = null; try { video.pause(); } catch (e) { } video.removeAttribute('src'); video.srcObject = null; if (st.url) { URL.revokeObjectURL(st.url); st.url = null; } st.srcKind = null; st.last = null; st.pose = null; st.startedAt = 0; st.inferEMA = 0; st.lastInfer = 0; st.lastFaceT = 0; st.faces = []; }
     function stop() { stopSources(); empty.classList.remove('hidden'); var g = canvas.getContext('2d'); g.fillStyle = '#020403'; g.fillRect(0, 0, canvas.width, canvas.height); }
 
     // ---------- main loop ----------

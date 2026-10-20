@@ -298,6 +298,58 @@ function firstFrame(c, ms) {
   });
 }
 function validCamUrl(u) { return typeof u === 'string' && u.length < 2048 && /^(rtsps?|https?|rtmp):\/\/[^\s]+$/i.test(u.trim()); }
+
+/* ---------------- ONVIF PTZ (pan / tilt / zoom) — control a moving camera from the platform ---------------- */
+const ONVIF_PORTS = [8899, 80, 8000, 8080, 2020, 8181, 85];
+function camCreds(cam) { try { const u = new URL(cam.url); return { host: u.hostname, user: decodeURIComponent(u.username) || 'admin', pass: decodeURIComponent(u.password) }; } catch (e) { return null; } }
+function onvifSecurity(user, pass) {
+  const nonce = crypto.randomBytes(16), created = new Date().toISOString();
+  const digest = crypto.createHash('sha1').update(Buffer.concat([nonce, Buffer.from(created, 'utf8'), Buffer.from(pass, 'utf8')])).digest('base64');
+  return '<s:Header><Security s:mustUnderstand="1" xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"><UsernameToken><Username>' + user + '</Username><Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">' + digest + '</Password><Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">' + nonce.toString('base64') + '</Nonce><Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">' + created + '</Created></UsernameToken></Security></s:Header>';
+}
+function onvifCall(host, port, user, pass, path, body) {
+  const xml = '<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">' + onvifSecurity(user, pass) + '<s:Body>' + body + '</s:Body></s:Envelope>';
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host, port, path: '/' + path, method: 'POST', headers: { 'Content-Type': 'application/soap+xml; charset=utf-8', 'Content-Length': Buffer.byteLength(xml) }, timeout: 6000 }, (res) => {
+      let d = ''; res.on('data', (c) => d += c); res.on('end', () => resolve({ status: res.statusCode, body: d }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout'))); req.on('error', reject); req.end(xml);
+  });
+}
+async function onvifPort(cam, cr) {
+  if (cam.onvifPort) return cam.onvifPort;
+  for (const p of ONVIF_PORTS) {
+    try { const r = await onvifCall(cr.host, p, cr.user, cr.pass, 'onvif/device_service', '<GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/>'); if (r.status === 200 && /onvif|SystemDateAndTime/i.test(r.body)) { cam.onvifPort = p; return p; } } catch (e) { }
+  }
+  return null;
+}
+async function onvifToken(cam, cr, port) {
+  if (cam.ptzToken) return cam.ptzToken;
+  const r = await onvifCall(cr.host, port, cr.user, cr.pass, 'onvif/media_service', '<GetProfiles xmlns="http://www.onvif.org/ver10/media/wsdl"/>');
+  const t = (r.body.match(/Profiles[^>]*\btoken="([^"]+)"/) || r.body.match(/token="([^"]+)"/) || [])[1];
+  if (t) cam.ptzToken = t;
+  return t;
+}
+const PTZ_VEC = { right: [1, 0, 0], left: [-1, 0, 0], up: [0, 1, 0], down: [0, -1, 0], upleft: [-1, 1, 0], upright: [1, 1, 0], downleft: [-1, -1, 0], downright: [1, -1, 0], zoomin: [0, 0, 1], zoomout: [0, 0, -1] };
+const ptzStopBody = (t) => '<Stop xmlns="http://www.onvif.org/ver20/ptz/wsdl"><ProfileToken>' + t + '</ProfileToken><PanTilt>true</PanTilt><Zoom>true</Zoom></Stop>';
+async function ptzControl(cam, act, speed, ms) {
+  const cr = camCreds(cam); if (!cr || !cr.host) return { ok: false, error: 'لا يوجد عنوان للكاميرا' };
+  if (cam.agentId) return { ok: false, error: 'تحكم كاميرا عبر وسيط الشبكة غير مدعوم بعد — شغّل المنصة على نفس شبكة الكاميرا' };
+  const port = await onvifPort(cam, cr); if (!port) return { ok: false, error: 'الكاميرا لا تدعم ONVIF (مفيش منفذ تحكم)' };
+  const token = await onvifToken(cam, cr, port); if (!token) return { ok: false, error: 'تعذّر قراءة ملف الكاميرا (ONVIF) — راجع المستخدم وكلمة المرور' };
+  if (act === 'stop') { clearTimeout(cam.ptzStopT); try { await onvifCall(cr.host, port, cr.user, cr.pass, 'onvif/ptz_service', ptzStopBody(token)); } catch (e) { } return { ok: true, act: act }; }
+  const v = PTZ_VEC[act]; if (!v) return { ok: false, error: 'حركة غير معروفة' };
+  const s = Math.max(0.1, Math.min(1, +speed || 0.6));
+  const vel = (v[0] || v[1]) ? '<PanTilt x="' + (v[0] * s) + '" y="' + (v[1] * s) + '" xmlns="http://www.onvif.org/ver10/schema"/>' : '';
+  const zoom = v[2] ? '<Zoom x="' + (v[2] * s) + '" xmlns="http://www.onvif.org/ver10/schema"/>' : '';
+  let r; try { r = await onvifCall(cr.host, port, cr.user, cr.pass, 'onvif/ptz_service', '<ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl"><ProfileToken>' + token + '</ProfileToken><Velocity>' + vel + zoom + '</Velocity></ContinuousMove>'); } catch (e) { return { ok: false, error: 'تعذّر الاتصال بالكاميرا' }; }
+  if (r.status !== 200 || /Fault/i.test(r.body)) return { ok: false, error: 'رفضت الكاميرا أمر الحركة (قد تكون الحركة مقفولة في إعدادات الكاميرا)' };
+  // auto-stop after a short nudge so a click moves a little, press-and-hold moves longer
+  const stopMs = Math.max(0, Math.min(5000, ms == null ? 500 : +ms));
+  clearTimeout(cam.ptzStopT);
+  if (stopMs) cam.ptzStopT = setTimeout(() => { onvifCall(cr.host, port, cr.user, cr.pass, 'onvif/ptz_service', ptzStopBody(token)).catch(() => { }); }, stopMs);
+  return { ok: true, act: act, port: port };
+}
 // ask an agent to try a URL once; resolves with { ok, kind, image | error }
 function agentTest(a, camUrl) {
   return new Promise((resolve) => {
@@ -359,6 +411,12 @@ async function ipcamApi(req, res, id, action) {
     ipcamStart(c); c.lastViewer = Date.now();
     const frame = await firstFrame(c, 15000);
     return frame ? send(res, 200, frame, { 'Content-Type': 'image/jpeg' }) : send(res, 504, { error: c.error || 'no_frame' });
+  }
+  if (action === 'ptz' && req.method === 'POST') {
+    if (!adminOk(req)) return send(res, 401, { error: 'admin_token_required' });
+    let j = {}; try { j = await readBody(req, 2048); } catch (e) { }
+    const out = await ptzControl(c, String(j.act || ''), j.speed, j.ms);
+    return send(res, out.ok ? 200 : 502, out);
   }
   return send(res, 200, ipcamPublic(c));
 }
@@ -460,7 +518,7 @@ async function api(req, res, pathname, query) {
   const t0 = Date.now();
   const cm = /^\/api\/v1\/cam\/([^/]+)(?:\/(frame|mjpeg|offer|answer))?$/.exec(pathname);
   if (cm) return camApi(req, res, cm[1], cm[2] || 'status');
-  const ic = /^\/api\/v1\/ipcams(?:\/([A-Za-z0-9-]+))?(?:\/(mjpeg|snapshot|delete))?\/?$/.exec(pathname);
+  const ic = /^\/api\/v1\/ipcams(?:\/([A-Za-z0-9-]+))?(?:\/(mjpeg|snapshot|delete|ptz))?\/?$/.exec(pathname);
   if (ic) return ipcamApi(req, res, ic[1] || null, ic[2] || 'status');
   const ag = /^\/api\/v1\/agents(?:\/([A-Za-z0-9-]+))?(?:\/(delete))?\/?$/.exec(pathname);
   if (ag) return agentsApi(req, res, ag[1] || null, ag[2] || null);
