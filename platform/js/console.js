@@ -735,13 +735,30 @@
   var HZ = {
     FIRE_DETECTED: { ic: '🔥', title: 'إنذار حريق', en: 'FIRE ALARM', amber: false, siren: 'fire' },
     SMOKE_DETECTED: { ic: '💨', title: 'إنذار دخان — احتمال حريق', en: 'SMOKE ALARM', amber: true, siren: 'smoke' },
-    SMOKING_DETECTED: { ic: '🚬', title: 'تدخين داخل المنشأة', en: 'SMOKING DETECTED', amber: true, siren: 'chime' }
+    SMOKING_DETECTED: { ic: '🚬', title: 'تدخين داخل المنشأة', en: 'SMOKING DETECTED', amber: true, siren: 'chime' },
+    FALL: { ic: '🚑', title: 'سقوط شخص', en: 'PERSON FALL', amber: false, siren: 'fire' },
+    SOS_GESTURE: { ic: '🆘', title: 'إشارة استغاثة', en: 'SOS GESTURE', amber: false, siren: 'fire' }
   };
   var EGICAlarm = (function () {
-    var ctx = null, timer = null, stopAt = 0, shown = {}, current = null;
+    var ctx = null, timer = null, stopAt = 0, shown = {}, current = null, pill = null;
     function audio() { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) { ctx = null; } return ctx; }
-    // browsers only allow sound after a user gesture — unlock on the first interaction
-    ['pointerdown', 'keydown', 'touchstart'].forEach(function (t) { document.addEventListener(t, function () { audio(); }, { once: true, passive: true }); });
+    function armed() { return !!(ctx && ctx.state === 'running'); }
+    // Browsers block sound until a user gesture; on an unattended screen the siren would be SILENT.
+    // Keep trying on every interaction (not once), and show an unmissable pill until audio is actually running.
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (t) { document.addEventListener(t, function () { audio(); updatePill(); }, { passive: true }); });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) { audio(); updatePill(); } });
+    function unlock() { audio(); try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { } updatePill(); }
+    function updatePill() {
+      if (!armed() && !pill && document.body) {
+        pill = h('button', { type: 'button', title: 'المتصفح بيمنع صوت الإنذار لحد ما تضغط مرة', style: { position: 'fixed', zIndex: '99999', insetInlineEnd: '16px', bottom: '16px', background: '#e5484d', color: '#fff', border: 'none', borderRadius: '999px', padding: '11px 18px', fontWeight: '700', fontSize: '13px', boxShadow: '0 6px 22px rgba(0,0,0,.45)', cursor: 'pointer' } }, '🔊 فعّل صوت الإنذار');
+        pill.addEventListener('click', function () {
+          audio(); if (ctx && ctx.state !== 'running') try { ctx.resume(); } catch (e) { }
+          setTimeout(function () { try { var t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = 880; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3); o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.31); } catch (e) { } try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { } updatePill(); }, 60);
+        });
+        document.body.appendChild(pill);
+      } else if (armed() && pill) { pill.remove(); pill = null; }
+    }
+    setInterval(updatePill, 3000); setTimeout(function () { audio(); updatePill(); }, 800);
     function tone(f0, f1, t, dur, type, vol) {
       var o = ctx.createOscillator(), g = ctx.createGain(), v = vol || 0.22;
       o.type = type || 'sawtooth'; o.frequency.setValueAtTime(f0, t); o.frequency.linearRampToValueAtTime(f1, t + dur);
@@ -763,6 +780,7 @@
       if (shown[key]) return; shown[key] = Date.now();
       opts = opts || {};
       current = e;
+      updatePill();
       var box = $('#hzAlarm');
       box.classList.toggle('is-amber', cfg.amber);
       $('#hzIc').textContent = cfg.ic;
@@ -781,7 +799,7 @@
       if (cfg.siren === 'chime') setTimeout(function () { if (current === e) hide(); }, 12000);
       try { if (document.hidden && window.Notification && Notification.permission === 'granted') new Notification(cfg.title, { body: $('#hzSub').textContent, tag: key, requireInteraction: true }); } catch (x) { }
     }
-    return { show: show, hide: hide, current: function () { return current; } };
+    return { show: show, hide: hide, current: function () { return current; }, unlock: unlock, armed: armed };
   })();
   window.EGICAlarm = EGICAlarm;
 

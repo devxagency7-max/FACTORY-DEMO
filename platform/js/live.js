@@ -369,12 +369,13 @@
     if (key === matcherKey) return matcherCache;
     matcherKey = key;
     var labeled = Object.keys(FACES).filter(function (k) { return FACES[k].length; }).map(function (k) { return new faceapi.LabeledFaceDescriptors(k, FACES[k].map(function (d) { return new Float32Array(d); })); });
-    matcherCache = labeled.length ? new faceapi.FaceMatcher(labeled, 0.5) : null;
+    matcherCache = labeled.length ? new faceapi.FaceMatcher(labeled, 0.52) : null;
     return matcherCache;
   }
   function detectFaces(src) {
     var m = matcher(); if (!m) return Promise.resolve([]);
-    return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })).withFaceLandmarks(true).withFaceDescriptors().then(function (res) {
+    // inputSize 512 + lower score threshold → catches smaller / farther faces so identity (and so the violation) lands on the right worker
+    return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.42 })).withFaceLandmarks(true).withFaceDescriptors().then(function (res) {
       return res.map(function (r) { var best = m.findBestMatch(r.descriptor), b = r.detection.box; return { box: { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }, label: best.label, dist: best.distance }; });
     });
   }
@@ -703,7 +704,12 @@
         }, Promise.resolve());
       }).then(function () {
         setLoading(true, 'تحميل التعرّف على الوجه…', 0.9, 'face-api · 128-D descriptors');
-        return ensureFace().catch(function () { return null; });
+        return ensureFace().then(function () {
+          // warm the three face nets on a blank frame behind the loader, so the first live face pass doesn't compile shaders mid-stream (first-seconds jank)
+          setLoading(true, 'تهيئة التعرّف على الوجه…', 0.96, null);
+          var c = document.createElement('canvas'); c.width = c.height = 512; c.getContext('2d').fillRect(0, 0, 512, 512);
+          return faceapi.detectSingleFace(c, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.5 })).withFaceLandmarks(true).withFaceDescriptor().catch(function () { });
+        }).catch(function () { return null; });
       }).then(function () { setLoading(false); renderModelChips(); if (st.srcKind) st.running = true; }).catch(function (e) { setLoading(true, 'تعذر تحميل النماذج', 1, e.message); prepP = null; });
       return prepP;
     }
@@ -756,36 +762,73 @@
         img.src = st.url;
       }
     }
-    function stopSources() { if (st.srcKind === 'phone' || st.srcKind === 'ipcam') detachPhone(st, phoneVid, phoneImg); st.ipcam = null; st.running = false; stopStream(st.stream); st.stream = null; try { video.pause(); } catch (e) { } video.removeAttribute('src'); video.srcObject = null; if (st.url) { URL.revokeObjectURL(st.url); st.url = null; } st.srcKind = null; st.last = null; st.pose = null; }
+    function stopSources() { if (st.srcKind === 'phone' || st.srcKind === 'ipcam') detachPhone(st, phoneVid, phoneImg); st.ipcam = null; st.running = false; stopStream(st.stream); st.stream = null; try { video.pause(); } catch (e) { } video.removeAttribute('src'); video.srcObject = null; if (st.url) { URL.revokeObjectURL(st.url); st.url = null; } st.srcKind = null; st.last = null; st.pose = null; st.startedAt = 0; st.inferEMA = 0; st.lastInfer = 0; st.lastFaceT = 0; st.faces = []; }
     function stop() { stopSources(); empty.classList.remove('hidden'); var g = canvas.getContext('2d'); g.fillStyle = '#020403'; g.fillRect(0, 0, canvas.width, canvas.height); }
 
     // ---------- main loop ----------
     function srcDims() { var s = st.src; return s ? { w: s.videoWidth || s.naturalWidth || s.width, h: s.videoHeight || s.naturalHeight || s.height } : { w: 0, h: 0 }; }
+    // adaptive model schedule: fire + the mode's primary model stay dense; pose/smoking thin out only when the device is slow
+    var SCHED = { ppe: ['ppe'], behavior: ['pose'], fire: ['fire'], smoking: ['smoking'], both: ['fire', 'ppe', 'fire', 'smoking', 'fire', 'pose'] };
+    function schedule() {
+      if (LAB.mode !== 'both') return SCHED[LAB.mode] || ['ppe'];
+      var e = st.inferEMA || 0;
+      if (e > 170) return ['fire', 'ppe', 'fire', 'smoking', 'fire', 'ppe', 'fire', 'pose']; // slow device: thin pose/smoking, never drop
+      return SCHED.both;
+    }
+    // cap inference rate so the GPU keeps headroom for compositing the video (smoothness); loosen on fast devices, tighten on slow
+    function inferMinMs() { var e = st.inferEMA || 0; return e > 140 ? 66 : e < 45 ? 30 : 45; }
+    function faceMinMs() { return (st.inferEMA || 0) > 140 ? 1100 : 700; }
+
     function loop() {
       if (!st.running || st.destroyed) return;
-      if ((st.srcKind === 'phone' && st.phoneMode === 'mjpeg') || st.srcKind === 'ipcam') st.src = phoneFrame(st, phoneImg) || st.src;
-      var d = srcDims();
-      if (d.w && d.h) {
-        if (canvas.width !== d.w || canvas.height !== d.h) { canvas.width = d.w; canvas.height = d.h; }
+      var now = performance.now();
+      if (!st.startedAt) st.startedAt = now;
+      var canvasSrc = (st.srcKind === 'phone' && st.phoneMode === 'mjpeg') || st.srcKind === 'ipcam';
+      // display the camera frame every rAF so the video is smooth; for mjpeg/ipcam draw the <img> directly (one copy instead of two)
+      var disp = canvasSrc ? phoneImg : st.src;
+      var dw = disp && (disp.videoWidth || disp.naturalWidth || disp.width), dh = disp && (disp.videoHeight || disp.naturalHeight || disp.height);
+      if (dw && dh) {
+        if (canvas.width !== dw || canvas.height !== dh) { canvas.width = dw; canvas.height = dh; }
         var g = canvas.getContext('2d');
         var mir = LAB.mirror && st.srcKind === 'camera';
-        g.save(); if (mir) { g.translate(d.w, 0); g.scale(-1, 1); } g.drawImage(st.src, 0, 0, d.w, d.h); g.restore();
-        if (!st.busy && prepP && AI) { st.busy = true; infer(d).then(function () { st.busy = false; }, function (e) { console.error(e); st.busy = false; }); }
+        g.save(); if (mir) { g.translate(dw, 0); g.scale(-1, 1); } g.drawImage(disp, 0, 0, dw, dh); g.restore();
+        var d = { w: dw, h: dh };
+        // inference: single-in-flight + rate-capped; refresh the inference canvas only when we actually run a model
+        if (!st.busy && prepP && AI && now - (st.lastInfer || 0) >= inferMinMs()) {
+          if (canvasSrc) st.src = phoneFrame(st, phoneImg) || st.src;
+          st.lastInfer = now; st.busy = true;
+          infer(d).then(function () { st.busy = false; }, function (e) { console.error(e); st.busy = false; });
+        }
+        kickFace(d, now, canvasSrc);
         drawOverlay(g, d, mir);
       }
       if (st.srcKind === 'image') { setTimeout(function () { requestAnimationFrame(loop); }, 120); } else requestAnimationFrame(loop);
     }
 
+    // face recognition runs on its OWN guard + cadence, never stacked onto a model frame — keeps both smooth and reliable
+    function kickFace(d, now, canvasSrc) {
+      if (st.faceBusy || !(faceapi && faceapi.nets.faceRecognitionNet.isLoaded) || !matcher()) return;
+      if (now - (st.lastFaceT || 0) < faceMinMs()) return;
+      st.lastFaceT = now; st.faceBusy = true;
+      if (canvasSrc) st.src = phoneFrame(st, phoneImg) || st.src;
+      var fsrc = st.src;
+      detectFaces(fsrc).then(function (faces) {
+        st.faces = faces; st.facesT = Date.now();
+        if (st.tracker) st.faces.forEach(function (f) { st.tracker.assignIdentity(f.box, f.label === 'unknown' ? '__unknown__' : f.label, 1 - f.dist); });
+        if (st.srcKind !== 'image' && st.srcKind !== 'video') sighter.feed(faces, fsrc); // a recognised face also marks attendance
+      }).catch(function () { }).then(function () { st.faceBusy = false; });
+    }
+
     function infer(d) {
       var t0 = performance.now(), now = Date.now();
-      // one model per frame; in the combined mode fire gets every other slot
-      var sched = { ppe: ['ppe'], behavior: ['pose'], fire: ['fire'], smoking: ['smoking'], both: ['fire', 'ppe', 'fire', 'smoking', 'fire', 'pose'] }[LAB.mode] || ['ppe'];
+      // first ~1.5s after start: run only the lightest model so the GPU settles and the opening is smooth
+      var sched = (LAB.mode === 'both' && st.startedAt && t0 - st.startedAt < 1500) ? ['fire'] : schedule();
       var task = sched[st.flip++ % sched.length];
       var doPPE = task === 'ppe', doPose = task === 'pose', doFire = task === 'fire', doSmoking = task === 'smoking';
       var jobs = [];
       var titan = ppeEng === 'titan';
-      if (doFire && (titan || AI.loaded('fire'))) jobs.push((titan ? serverDetect('/fire/detect', st.src, d) : AI.run('fire', st.src, { conf: 0.3, iou: 0.45 })).then(function (dets) { hazards('fire', dets, d, now); }, serverErr));
-      if (doSmoking && (titan || AI.loaded('smoking'))) jobs.push((titan ? serverDetect('/smoking/detect', st.src, d) : AI.run('smoking', st.src, { conf: { cigarette: 0.35, vape: 0.35, smoke: 0.4, person: 0.4 }, iou: 0.5 })).then(function (dets) { hazards('smoking', dets, d, now); }, serverErr));
+      if (doFire && (titan || AI.loaded('fire'))) jobs.push((titan ? serverDetect('/fire/detect', st.src, d) : AI.run('fire', st.src, { conf: { fire: 0.25, smoke: 0.4 }, iou: 0.45 })).then(function (dets) { hazards('fire', dets, d, now); }, serverErr));
+      if (doSmoking && (titan || AI.loaded('smoking'))) jobs.push((titan ? serverDetect('/smoking/detect', st.src, d) : AI.run('smoking', st.src, { conf: { cigarette: 0.28, vape: 0.28, smoke: 0.4, person: 0.4 }, iou: 0.5 })).then(function (dets) { hazards('smoking', dets, d, now); }, serverErr));
       if (doPPE && (titan ? titanOk : AI.loaded('ppe'))) jobs.push((titan ? titanDetect(st.src, d) : AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5 })).then(function (dets) {
         if (!st.tracker) st.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: st.srcKind === 'image' ? 60000 : 25000 });
         var people = titan && dets.schema !== 'sh17' ? AI.analyzePPEHF(dets, d.w, d.h) : AI.analyzePPE(dets, d.w, d.h);
@@ -796,18 +839,10 @@
         if (!titan) throw e;
         serverErr(e);
       }));
-      if (doPose && AI.loaded('pose')) jobs.push(AI.run('pose', st.src, { conf: 0.45, iou: 0.5, maxDet: 6 }).then(function (poses) { st.pose = { poses: poses, t: now }; behaviour(poses, d, now); }));
-      if (faceapi && faceapi.nets.faceRecognitionNet.isLoaded && now - st.lastFace > 450 && matcher()) {
-        st.lastFace = now;
-        var fsrc = st.src;
-        jobs.push(detectFaces(fsrc).then(function (faces) {
-          st.faces = faces;
-          if (st.tracker) st.faces.forEach(function (f) { st.tracker.assignIdentity(f.box, f.label === 'unknown' ? '__unknown__' : f.label, 1 - f.dist); });
-          if (st.srcKind !== 'image' && st.srcKind !== 'video') sighter.feed(faces, fsrc); // recognised faces also count as attendance
-        }).catch(function () { }));
-      }
+      if (doPose && AI.loaded('pose')) jobs.push(AI.run('pose', st.src, { conf: 0.4, iou: 0.5, maxDet: 10 }).then(function (poses) { st.pose = { poses: poses, t: now }; behaviour(poses, d, now); }));
       return Promise.all(jobs).then(function () {
         var dt = performance.now() - t0; st.ms = Math.round(dt); st.frames++;
+        st.inferEMA = st.inferEMA ? st.inferEMA * 0.85 + dt * 0.15 : dt; // smoothed inference time → drives the adaptive schedule + rate cap
         var el = performance.now() - st.fpsT; if (el > 1000) { st.fps = Math.round(st.frames * 1000 / el); st.frames = 0; st.fpsT = performance.now(); }
         updateSide();
       });
@@ -875,8 +910,8 @@
 
     // ---------- fire · smoke · smoking ----------
     var HZ_RULE = {
-      fire: { need: 3, win: 5, type: 'FIRE_DETECTED', sev: 'CRITICAL', cool: 60000, ar: 'حريق', model: 'YOLOv8n · D-Fire' },
-      smoke: { need: 4, win: 6, type: 'SMOKE_DETECTED', sev: 'HIGH', cool: 60000, ar: 'دخان', model: 'YOLOv8n · D-Fire' },
+      fire: { need: 2, win: 4, type: 'FIRE_DETECTED', sev: 'CRITICAL', cool: 30000, ar: 'حريق', model: 'YOLOv8n · D-Fire' },
+      smoke: { need: 4, win: 6, type: 'SMOKE_DETECTED', sev: 'HIGH', cool: 45000, ar: 'دخان', model: 'YOLOv8n · D-Fire' },
       smoking: { need: 3, win: 5, type: 'SMOKING_DETECTED', sev: 'HIGH', cool: 45000, ar: 'تدخين', model: 'YOLOv8 · cigarette/vape' }
     };
     var SMOKING_LABELS = { cigarette: 'سيجارة', vape: 'فيب', smoke: 'دخان سيجارة' };
@@ -1209,9 +1244,9 @@
     function read(W, H) {
       if (ANPR.engine === 'server') return readServer(W, H);
       var t0 = performance.now(), gen = st.gen;
-      return AI.run('plate', st.src, { conf: 0.25, maxDet: 3 }).then(function (plates) {
+      return AI.run('plate', st.src, { conf: 0.2, maxDet: 5 }).then(function (plates) {
         if (gen !== st.gen) return null;
-        if (!plates.length && st.srcKind === 'image') return AI.run('plate', st.src, { conf: 0.25, maxDet: 3, shrink: 0.72 });
+        if (!plates.length && st.srcKind === 'image') return AI.run('plate', st.src, { conf: 0.2, maxDet: 5, shrink: 0.72 });
         return plates;
       }).then(function (plates) {
         if (!plates || gen !== st.gen) return;

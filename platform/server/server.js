@@ -220,7 +220,7 @@ setInterval(() => { const now = Date.now(); for (const [id, c] of cams) if (now 
 /* ------------------------------------------------------------------ */
 const CAM = require('../agent/edge-agent.js');
 const { errAr, maskUrl, protoOf } = CAM;
-const IPCAM_FPS = Math.max(1, +process.env.IPCAM_FPS || 12);      // frames/s sent to the browser
+const IPCAM_FPS = Math.max(1, +process.env.IPCAM_FPS || 15);      // frames/s sent to the browser (camera native max)
 const IPCAM_WIDTH = Math.max(320, +process.env.IPCAM_WIDTH || 1280); // RTSP frames are scaled down to this width
 const AGENT_FPS = Math.max(1, +process.env.AGENT_FPS || 8);        // agents upload over the factory's internet line
 const AGENT_WIDTH = Math.max(320, +process.env.AGENT_WIDTH || 960);

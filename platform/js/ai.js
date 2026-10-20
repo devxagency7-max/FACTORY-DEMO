@@ -252,7 +252,8 @@
   /* ------------------------------------------------------------------ */
   /* PPE analysis — associate helmet / glasses / vest / gloves / ear protection with each person */
   /* ------------------------------------------------------------------ */
-  var PPE_CONF = { person: 0.35, head: 0.3, face: 0.3, helmet: 0.35, glasses: 0.28, 'safety-vest': 0.35, 'safety-suit': 0.4, gloves: 0.35, 'face-mask': 0.35, 'face-guard': 0.35, hands: 0.4, shoes: 0.35, ear: 0.45, 'ear-mufs': 0.35, foot: 0.9, tool: 0.9, 'medical-suit': 0.5 };
+  // lower thresholds for the person/head/face anchors and the small items (glasses, gloves, ears) so distant workers and small PPE are evaluated instead of silently dropped; the temporal Tracker absorbs the extra single-frame noise
+  var PPE_CONF = { person: 0.3, head: 0.27, face: 0.27, helmet: 0.35, glasses: 0.23, 'safety-vest': 0.35, 'safety-suit': 0.4, gloves: 0.28, 'face-mask': 0.35, 'face-guard': 0.35, hands: 0.4, shoes: 0.35, ear: 0.4, 'ear-mufs': 0.35, foot: 0.9, tool: 0.9, 'medical-suit': 0.5 };
 
   function expand(b, l, t, r, bt) { var w = b.x2 - b.x1, h = b.y2 - b.y1; return { x1: b.x1 - w * l, y1: b.y1 - h * t, x2: b.x2 + w * r, y2: b.y2 + h * bt }; }
   function center(b) { return { x: (b.x1 + b.x2) / 2, y: (b.y1 + b.y2) / 2 }; }
@@ -359,7 +360,7 @@
   /* ------------------------------------------------------------------ */
   function Tracker(opts) {
     this.tracks = []; this.nextId = 1;
-    this.opts = Object.assign({ window: 12, missingRatio: 0.6, persistMs: 1500, cooldownMs: 25000, maxAgeMs: 1500, required: ['helmet', 'glasses', 'vest'] }, opts || {});
+    this.opts = Object.assign({ window: 12, missingRatio: 0.55, persistMs: 1500, cooldownMs: 25000, maxAgeMs: 1500, required: ['helmet', 'glasses', 'vest'] }, opts || {});
   }
   Tracker.prototype.update = function (people, now) {
     var self = this, o = this.opts;
