@@ -606,7 +606,7 @@
       API.get('workers', { limit: 1000 }).then(function (r) { r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id }); if (w.id === LAB.profileId) o.selected = true; profSel.appendChild(o); }); });
       profSel.addEventListener('change', function () { LAB.profileId = profSel.value || null; saveLab(); });
       profSel.style.display = LAB.idMode === 'fixed' || !hasFaces() ? '' : 'none';
-      c1.body.appendChild(h('div', { style: { display: 'grid', gap: '10px' } }, idCard, idSel, profSel, h('div', { class: 'muted', style: { fontSize: '11.5px' }, id: 'idHint', text: hasFaces() ? 'موظفون ببصمة وجه: ' + Object.keys(FACES).length + ' — أي وجه يتعرف عليه بيتسجل حضوره تلقائيًا.' : 'لا توجد بصمات وجه مسجلة بعد — سجّل وجوه الموظفين من «تسجيل وجه» أو من ملف الموظف.' })));
+      c1.body.appendChild(h('div', { style: { display: 'grid', gap: '10px' } }, idCard, h('div', { id: 'idRoster', style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } }), idSel, profSel, h('div', { class: 'muted', style: { fontSize: '11.5px' }, id: 'idHint', text: hasFaces() ? 'موظفون ببصمة وجه: ' + Object.keys(FACES).length + ' — أي وجه يتعرف عليه بيتسجل حضوره تلقائيًا.' : 'لا توجد بصمات وجه مسجلة بعد — سجّل وجوه الموظفين من «تسجيل وجه» أو من ملف الموظف.' })));
       side.appendChild(c1);
       // PPE checklist
       if (hasPPE()) {
@@ -878,7 +878,7 @@
       var jobs = [];
       var titan = ppeEng === 'titan';
       if (doFire && (titan || AI.loaded('fire'))) jobs.push((titan ? serverDetect('/fire/detect', st.src, d) : AI.run('fire', st.src, { conf: { fire: 0.25, smoke: 0.4 }, iou: 0.45 })).then(function (dets) { hazards('fire', dets, d, now); }, serverErr));
-      if (doSmoking && (titan || AI.loaded('smoking'))) jobs.push((titan ? serverDetect('/smoking/detect', st.src, d) : AI.run('smoking', st.src, { conf: { cigarette: 0.28, vape: 0.28, smoke: 0.4, person: 0.4 }, iou: 0.5 })).then(function (dets) { hazards('smoking', dets, d, now); }, serverErr));
+      if (doSmoking && (titan || AI.loaded('smoking'))) jobs.push((titan ? serverDetect('/smoking/detect', st.src, d) : AI.run('smoking', st.src, { conf: { cigarette: 0.45, vape: 0.45, smoke: 0.45, person: 0.4 }, iou: 0.5 })).then(function (dets) { hazards('smoking', dets, d, now); }, serverErr));
       if (doPPE && (titan ? titanOk : AI.loaded('ppe'))) jobs.push((titan ? titanDetect(st.src, d) : AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5 })).then(function (dets) {
         if (!st.tracker) st.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: st.srcKind === 'image' ? 60000 : 25000 });
         var people = titan && dets.schema !== 'sh17' ? AI.analyzePPEHF(dets, d.w, d.h) : AI.analyzePPE(dets, d.w, d.h);
@@ -963,7 +963,7 @@
     var HZ_RULE = {
       fire: { need: 2, win: 4, type: 'FIRE_DETECTED', sev: 'CRITICAL', cool: 30000, ar: 'حريق', model: 'YOLOv8n · D-Fire' },
       smoke: { need: 4, win: 6, type: 'SMOKE_DETECTED', sev: 'HIGH', cool: 45000, ar: 'دخان', model: 'YOLOv8n · D-Fire' },
-      smoking: { need: 3, win: 5, type: 'SMOKING_DETECTED', sev: 'HIGH', cool: 45000, ar: 'تدخين', model: 'YOLOv8 · cigarette/vape' }
+      smoking: { need: 4, win: 6, type: 'SMOKING_DETECTED', sev: 'HIGH', cool: 45000, ar: 'تدخين', model: 'YOLOv8 · cigarette/vape' }
     };
     var SMOKING_LABELS = { cigarette: 'سيجارة', vape: 'فيب', smoke: 'دخان سيجارة' };
     st.hz = { fire: [], smoke: [], smoking: [], cool: {}, view: {} };
@@ -1111,6 +1111,19 @@
         if (w) { nm.textContent = w.name; sb.textContent = w.id + ' · ' + w.dept + (primary && primary.identity ? ' · تعرّف بالوجه ✓' : ' · ربط بالملف'); if (ph) { clear(ph); if (w.photo) ph.appendChild(h('img', { src: API.evidenceUrl(w.photo), alt: '' })); else ph.textContent = U.initials(w.name); } }
         else if (primary) { nm.textContent = 'شخص غير معروف'; sb.textContent = 'سجّل الوجه لربطه بملف'; if (ph) ph.textContent = '?'; if (wid) workerInfo(wid); }
         else { nm.textContent = '—'; sb.textContent = 'بانتظار ظهور شخص'; }
+      }
+      // roster: every person currently in frame + their identity (green = recognised, red = violation, grey = unknown)
+      var roster = document.getElementById('idRoster');
+      if (roster && hasPPE()) {
+        var tracks = L ? L.tracks.filter(function (t) { return t.seen === L.t; }) : [];
+        clear(roster);
+        var reqK = reqKeys();
+        tracks.slice(0, 16).forEach(function (t) {
+          var id = resolveWorker(t), ww = id ? workerCache[id] : null; if (id && !ww) workerInfo(id);
+          var miss = reqK.some(function (k) { return t.stable && t.stable[k] === 'MISSING'; });
+          var name = t.identity && workerCache[t.identity] ? workerCache[t.identity].name : ww ? ww.name : 'غير معروف';
+          roster.appendChild(h('span', { class: 'chip', style: { display: 'inline-flex', alignItems: 'center', gap: '5px', borderColor: miss ? 'var(--critical)' : t.identity ? 'var(--good)' : '' } }, h('span', { class: 'dot ' + (miss ? 'dot--off' : t.identity ? 'dot--on' : 'dot--idle') }), name));
+        });
       }
       if (hzList) {
         var setH = function (id, cls, text) { var r = document.getElementById('hz-' + id); if (!r) return; r.classList.toggle('is-ok', cls === 'ok'); r.classList.toggle('is-miss', cls === 'bad'); r.querySelector('.state-pill').textContent = text; };
