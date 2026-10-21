@@ -730,14 +730,84 @@
       h('div', { class: 'row' }, h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })))));
     var loading = h('div', { class: 'lab-loading hidden' }, h('div', { class: 'box' }, h('div', { class: 'spinner' }), h('div', { style: { marginTop: '14px', fontWeight: 600 }, id: 'ldT', text: 'تحميل النماذج…' }), h('div', { class: 'bar' }, h('i', { id: 'ldBar' })), h('div', { class: 'muted mono', style: { fontSize: '11px' }, id: 'ldS', text: '' })));
     var stage = h('div', { class: 'lab-stage' }, canvas, video, img, phoneImg, phoneVid, h('div', { class: 'lab-hud' }, hudL, hudR), h('div', { class: 'lab-brand' }, h('div', { class: 'powered' }, h('span', { class: 'dot' }), 'POWERED BY ', h('b', { text: 'DELMON' }), h('span', { class: 'amp', text: '&' }), h('b', { text: 'DEV SMART X' }))), empty, loading);
-    // second lens / camera — live view beside the AI one (no heavy AI on the second, to stay smooth)
-    var secondImg = h('img', { alt: '', style: { width: '100%', display: 'block', borderRadius: '12px', background: '#020403', aspectRatio: '16 / 9', objectFit: 'cover' } });
+    // second lens / camera with its OWN light AI pipeline (PPE + fall), drawn beside the main one
+    var secondCanvas = h('canvas', { width: 640, height: 360, style: { width: '100%', display: 'block', borderRadius: '12px', background: '#020403', aspectRatio: '16 / 9' } });
+    var secondSrc = h('img', { alt: '', style: { position: 'absolute', width: '1px', height: '1px', opacity: 0, pointerEvents: 'none' } });
     var secondLabel = h('div', { style: { position: 'absolute', top: '8px', insetInlineStart: '8px', background: 'rgba(0,0,0,.55)', color: '#fff', padding: '4px 10px', borderRadius: '8px', fontSize: '12px' }, text: '' });
-    var secondWrap = h('div', { style: { position: 'relative', flex: '1 1 0', minWidth: '0', display: 'none' } }, secondImg, secondLabel, h('button', { class: 'btn btn--xs', style: { position: 'absolute', top: '8px', insetInlineEnd: '8px' }, onclick: function () { hideSecond(); }, text: '✕ إغلاق' }));
+    var secondHud = h('div', { style: { position: 'absolute', top: '8px', insetInlineEnd: '92px', background: 'rgba(0,0,0,.5)', color: '#fff', padding: '3px 8px', borderRadius: '7px', fontSize: '11px' }, text: '' });
+    var secondWrap = h('div', { style: { position: 'relative', flex: '1 1 0', minWidth: '0', display: 'none' } }, secondCanvas, secondSrc, secondLabel, secondHud, h('button', { class: 'btn btn--xs', style: { position: 'absolute', top: '8px', insetInlineEnd: '8px' }, onclick: function () { hideSecond(); }, text: '✕ إغلاق' }));
     var stageRow = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start' } }, h('div', { style: { flex: '1 1 0', minWidth: '0' } }, stage), secondWrap);
     var left = h('div', null, stageRow);
-    function hideSecond() { secondImg.removeAttribute('src'); secondWrap.style.display = 'none'; }
-    function showSecond(cam) { secondLabel.textContent = '📷 ' + cam.name + ' · بث مباشر'; secondImg.src = (API.state.base || '') + '/api/v1/ipcams/' + cam.id + '/mjpeg?t=' + (+new Date()); secondWrap.style.display = ''; }
+    var st2 = null, secondCool = {};
+    function hideSecond() { if (st2) st2.running = false; st2 = null; secondSrc.removeAttribute('src'); secondWrap.style.display = 'none'; }
+    function showSecond(cam) {
+      hideSecond();
+      secondLabel.textContent = '📷 ' + cam.name + ' · AI';
+      secondSrc.crossOrigin = 'anonymous';
+      secondSrc.src = (API.state.base || '') + '/api/v1/ipcams/' + cam.id + '/mjpeg?t=' + (+new Date());
+      secondWrap.style.display = '';
+      st2 = { cam: cam, running: true, busy: false, tracker: null, last: null, lastInfer: 0, pfallSince: 0, fallCool: 0, ms: 0, frame: document.createElement('canvas') };
+      loop2();
+    }
+    function second2canvas() {
+      var w = secondSrc.naturalWidth, hh = secondSrc.naturalHeight; if (!w || !hh) return null;
+      var c = st2.frame; if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; } c.getContext('2d').drawImage(secondSrc, 0, 0, w, hh); return c;
+    }
+    function loop2() {
+      if (!st2 || !st2.running) return;
+      var now = performance.now(), frame = second2canvas();
+      if (frame) {
+        var dw = frame.width, dh = frame.height;
+        if (secondCanvas.width !== dw || secondCanvas.height !== dh) { secondCanvas.width = dw; secondCanvas.height = dh; }
+        var g = secondCanvas.getContext('2d'); g.drawImage(frame, 0, 0, dw, dh);
+        // PPE inference — serialized with the main pipeline (one GPU), capped so neither lens starves
+        if (!st.busy && !st2.busy && prepP && AI && AI.loaded('ppe') && now - st2.lastInfer >= Math.max(450, (st.inferEMA || 150) * 2)) {
+          st2.busy = true; st2.lastInfer = now; var t0 = performance.now();
+          AI.run('ppe', frame, { conf: AI.PPE_CONF, iou: 0.5 }).then(function (dets) {
+            if (!st2) return;
+            if (!st2.tracker) st2.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: 25000 });
+            var people = AI.analyzePPE(dets, dw, dh);
+            var vio = st2.tracker.update(people, Date.now());
+            st2.last = { tracks: st2.tracker.tracks.slice(), t: Date.now() };
+            vio.forEach(function (x) { reportSecond(x.track, x.items, dw, dh); });
+            secondFall(people, dw, dh, Date.now());
+            st2.ms = Math.round(performance.now() - t0);
+          }).catch(function () { }).then(function () { if (st2) st2.busy = false; });
+        }
+        if (st2 && st2.last && Date.now() - st2.last.t < 2500) drawSecondOverlay(g, dw, dh);
+        secondHud.textContent = (st2 ? st2.ms : 0) + ' ms';
+      }
+      requestAnimationFrame(loop2);
+    }
+    function drawSecondOverlay(g, dw, dh) {
+      var fs = Math.max(12, Math.round(dw / 60)), lw = Math.max(2, dw / 420), req = reqKeys();
+      st2.last.tracks.forEach(function (t) {
+        if (t.seen !== st2.last.t) return;
+        var missing = req.filter(function (k) { return t.stable && t.stable[k] === 'MISSING'; });
+        var ok = req.every(function (k) { return t.stable && t.stable[k] === 'OK'; });
+        corners(g, t.box, missing.length ? COL.bad : ok ? COL.ok : COL.warn, lw);
+        req.forEach(function (k) { var it = t.items[k]; if (!it || !it.box) return; if (it.state === 'MISSING') { g.setLineDash([9, 6]); g.strokeStyle = COL.bad; g.lineWidth = lw; g.strokeRect(it.box.x1, it.box.y1, it.box.x2 - it.box.x1, it.box.y2 - it.box.y1); g.setLineDash([]); label(g, it.box.x1, it.box.y2 + fs * 1.5, '✗ ' + PPE_AR[k], 'rgba(170,20,20,.92)', fs * 0.85); } });
+        label(g, t.box.x1, t.box.y1, missing.length ? 'مخالفة' : ok ? 'ملتزم' : 'شخص', missing.length ? 'rgba(150,16,16,.94)' : ok ? 'rgba(10,90,50,.9)' : 'rgba(120,90,10,.9)', fs);
+      });
+    }
+    function reportSecond(track, items, dw, dh) {
+      if (!st2) return;
+      var tnow = Date.now(), key = 'u' + Math.round(((track.box.x1 + track.box.x2) / 2) / 140) + '_' + Math.round(((track.box.y1 + track.box.y2) / 2) / 140);
+      items = items.filter(function (k) { var kk = st2.cam.id + ':' + key + ':' + k; if (secondCool[kk] && tnow - secondCool[kk] < 45000) return false; secondCool[kk] = tnow; return true; });
+      if (!items.length) return;
+      var snap = secondCanvas.toDataURL('image/jpeg', 0.8);
+      items.forEach(function (k) { API.post('events', { type: PPE_TYPES[k], cameraId: st2.cam.id, conf: 0.85, source: 'live-ai', evidence: { kind: 'live', image: snap, model: 'YOLOv8s-SH17' } }).catch(function () { }); });
+      secondWrap.classList.remove('is-alert'); void secondWrap.offsetWidth; secondWrap.classList.add('is-alert');
+    }
+    function secondFall(people, dw, dh, now) {
+      if (!st2) return;
+      var down = (people || []).filter(function (p) { var b = p.box; return (b.x2 - b.x1) > (b.y2 - b.y1) * 1.5 && (b.y2 - b.y1) > dh * 0.07; });
+      if (down.length) { if (!st2.pfallSince) st2.pfallSince = now; } else st2.pfallSince = 0;
+      if (st2.pfallSince && now - st2.pfallSince > 1200 && now - st2.fallCool > 30000) {
+        st2.fallCool = now; var snap = secondCanvas.toDataURL('image/jpeg', 0.8);
+        API.post('events', { type: 'FALL', cameraId: st2.cam.id, conf: 0.9, source: 'live-pose', sev: 'CRITICAL', evidence: { kind: 'live', image: snap, model: 'Fall (person box)' }, note: 'شخص في وضع أفقي على الأرض' }).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: snap }); }).catch(function () { });
+      }
+    }
     function pickSecondCam() {
       fetch((API.state.base || '') + '/api/v1/ipcams', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
         var others = (j.items || []).filter(function (c) { return !(st.ipcam && c.id === st.ipcam.id); });
