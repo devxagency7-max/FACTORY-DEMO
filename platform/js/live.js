@@ -247,7 +247,7 @@
               h('div', { class: 'mono muted', dir: 'ltr', style: { fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'start' }, text: c.url }),
               c.error ? h('div', { style: { fontSize: '11.5px', color: '#ff9b9b' }, text: c.error }) : null),
             h('div', { style: { display: 'flex', gap: '6px' } },
-              onPick ? h('button', { class: 'btn btn--xs btn--accent', text: 'تشغيل', onclick: function () { U.closeModal(); onPick({ kind: 'ipcam', id: c.id, name: c.name, url: API.state.base + '/api/v1/ipcams/' + c.id + '/mjpeg' }); } }) : null,
+              onPick ? h('button', { class: 'btn btn--xs btn--accent', text: 'تشغيل', onclick: function () { U.closeModal(); onPick({ kind: 'ipcam', id: c.id, name: c.name, webrtc: !!c.webrtc, url: API.state.base + '/api/v1/ipcams/' + c.id + '/mjpeg' }); } }) : null,
               h('button', { class: 'btn btn--xs', text: 'تعديل', onclick: function () { editId = c.id; name.value = c.name; urlIn.value = c.url; siteSel.value = c.siteId || 'PLT-01'; viaSel.value = c.agentId || ''; saveBtn.textContent = 'حفظ التعديل'; msg.textContent = 'كلمة المرور المخفية (****) هتفضل زي ما هي لو مغيرتهاش.'; } }),
               h('button', { class: 'btn btn--xs btn--danger', text: 'حذف', onclick: function () { if (!window.confirm('حذف الكاميرا «' + c.name + '»؟')) return; adminPost('ipcams/' + c.id + '/delete').then(load).catch(function (e) { msg.textContent = 'تعذر الحذف: ' + e.message; }); } }))));
         });
@@ -321,8 +321,50 @@
       'powershell -NoProfile -Command "$z=Join-Path $env:TEMP \'egic-ffmpeg.zip\'; $d=Join-Path $env:TEMP \'egic-ffmpeg\'; Invoke-WebRequest -UseBasicParsing \'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip\' -OutFile $z; Expand-Archive $z $d -Force; Copy-Item (Get-ChildItem $d -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName \'ffmpeg.exe\'"',
       ':run', 'node edge-agent.js --server "' + server + '" --key "' + key + '"', 'echo Agent stopped - restarting in 5 seconds...', 'timeout /t 5 >nul', 'goto run', ''].join('\r\n');
   }
-  // attach an IP camera's MJPEG to a hidden <img>; resolves when the first frame arrives
-  function attachIpCam(src, el, st, onLost) {
+  // real video from the platform's go2rtc over WebRTC (the camera's own H.264, no re-encode); resolves with the <video>
+  function ipcamVideo(src, vid, st) {
+    var pc = new RTCPeerConnection({ iceServers: [] }), done = false;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    var p = new Promise(function (res, rej) {
+      var to = setTimeout(function () { fail(new Error('webrtc_timeout')); }, 12000);
+      function fail(e) { if (done) return; done = true; clearTimeout(to); try { pc.close(); } catch (x) { } rej(e); }
+      pc.addEventListener('track', function (e) { vid.srcObject = e.streams[0] || new MediaStream([e.track]); vid.muted = true; try { e.receiver.playoutDelayHint = 0; e.receiver.jitterBufferTarget = 0; } catch (x) { } });
+      pc.addEventListener('connectionstatechange', function () { if (pc.connectionState === 'failed') fail(new Error('webrtc_failed')); });
+      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () {
+        return new Promise(function (r) { if (pc.iceGatheringState === 'complete') return r(); var t = setTimeout(r, 1500); pc.addEventListener('icegatheringstatechange', function () { if (pc.iceGatheringState === 'complete') { clearTimeout(t); r(); } }); });
+      }).then(function () {
+        return fetch(API.state.base + '/api/v1/ipcams/' + src.id + '/webrtc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }) });
+      }).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); })
+        .then(function (ans) { return pc.setRemoteDescription(ans); })
+        .then(function () { return vid.play().catch(function () { }); })
+        .then(function () { (function w() { if (done) return; if (vid.videoWidth) { done = true; clearTimeout(to); return res(pc); } setTimeout(w, 50); })(); })
+        .catch(fail);
+    });
+    return p;
+  }
+  // attach an IP camera: real video over WebRTC when the server streams it (vid given), else MJPEG into a hidden <img>
+  function attachIpCam(src, el, st, onLost, vid) {
+    if (vid && src.webrtc && window.RTCPeerConnection && !st.noWebrtc) {
+      clearInterval(st.phoneWatch); st.ipcam = src;
+      return ipcamVideo(src, vid, st).then(function (pc) {
+        st.phoneMode = 'rtc'; st.phonePc = pc;
+        var lostT = null;
+        pc.addEventListener('connectionstatechange', function () {
+          var cs = pc.connectionState;
+          if (cs === 'connected') clearTimeout(lostT);
+          else if (cs === 'disconnected' || cs === 'failed') { clearTimeout(lostT); lostT = setTimeout(function () { if (st.phonePc === pc && pc.connectionState !== 'connected') onLost('انقطع بث الفيديو من الكاميرا'); }, cs === 'failed' ? 0 : 4000); }
+        });
+        st.phoneWatch = setInterval(function () {
+          if (st.phonePc !== pc) return clearInterval(st.phoneWatch);
+          pc.getStats().then(function (r) { r.forEach(function (x) { if (x.type === 'inbound-rtp' && x.kind === 'video') st.phoneFps = Math.round(x.framesPerSecond || 0); }); });
+        }, 1000);
+        return vid;
+      }, function (e) {
+        // no WebRTC path (firewall, remote access without TURN, codec) → JPEG stream
+        console.warn('IP cam WebRTC unavailable, falling back to MJPEG:', e.message);
+        return attachIpCam(src, el, st, onLost);
+      });
+    }
     clearInterval(st.phoneWatch); st.ipcam = src; st.phoneMode = 'mjpeg';
     el.crossOrigin = 'anonymous';
     el.src = src.url + '?t=' + Date.now();
@@ -363,21 +405,46 @@
     Promise.all(ids.map(function (k) { return API.post('faces', { workerId: k, descriptors: old[k] }).catch(function () { return null; }); })).then(function () { try { localStorage.removeItem('egic-faces'); } catch (e) { } loadFaces(); });
   }
   function hasFaces() { return Object.keys(FACES).some(function (k) { return FACES[k] && FACES[k].length; }); }
+  // gallery of enrolled face prints (Float32Array per sample) — rebuilt only when enrolment changes
   function matcher() {
-    if (!faceapi) return null;
+    if (!faceapi || !AI) return null;
     var key = Object.keys(FACES).map(function (k) { return k + FACES[k].length; }).join(',');
     if (key === matcherKey) return matcherCache;
     matcherKey = key;
-    var labeled = Object.keys(FACES).filter(function (k) { return FACES[k].length; }).map(function (k) { return new faceapi.LabeledFaceDescriptors(k, FACES[k].map(function (d) { return new Float32Array(d); })); });
-    // 0.46: stricter so a blurry/tiny face is marked "unknown" instead of guessed as the wrong employee
-    matcherCache = labeled.length ? new faceapi.FaceMatcher(labeled, 0.46) : null;
+    var g = {}, n = 0;
+    Object.keys(FACES).forEach(function (k) { if (FACES[k] && FACES[k].length) { g[k] = FACES[k].map(function (d) { return new Float32Array(d); }); n++; } });
+    matcherCache = n ? g : null;
     return matcherCache;
   }
-  function detectFaces(src, size) {
-    var m = matcher(); if (!m) return Promise.resolve([]);
-    // inputSize caller-tunable (smaller = faster on weak GPUs); lower score threshold catches smaller / farther faces
-    return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: size || 512, scoreThreshold: 0.42 })).withFaceLandmarks(true).withFaceDescriptors().then(function (res) {
-      return res.map(function (r) { var best = m.findBestMatch(r.descriptor), b = r.detection.box; return { box: { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }, label: best.label, dist: best.distance }; });
+  function srcDim(src) { return { w: src.videoWidth || src.naturalWidth || src.width, h: src.videoHeight || src.naturalHeight || src.height }; }
+  function detectRaw(src, size, x0, y0) {
+    return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: size, scoreThreshold: 0.42 })).withFaceLandmarks(true).withFaceDescriptors().then(function (res) {
+      return res.map(function (r) { var b = r.detection.box; return { box: { x1: b.x + x0, y1: b.y + y0, x2: b.x + b.width + x0, y2: b.y + b.height + y0 }, score: r.detection.score, descriptor: r.descriptor }; });
+    });
+  }
+  var tileCv = null;
+  // Many people at once: the whole frame, plus (for high-resolution sources) four overlapping 60 % tiles, so faces of
+  // workers further away aren't shrunk to a few pixels by the detector's input size. Every face is then matched with
+  // AI.matchFaces: one name per person, only when clearly that person.
+  function detectFaces(src, size, opts) {
+    var g = matcher(); if (!g) return Promise.resolve([]);
+    opts = opts || {}; size = size || 512;
+    var d = srcDim(src), steps = [function () { return detectRaw(src, size, 0, 0); }];
+    if (opts.tiles && d.w >= 1280) {
+      var tw = Math.round(d.w * 0.6), th = Math.round(d.h * 0.6);
+      [[0, 0], [d.w - tw, 0], [0, d.h - th], [d.w - tw, d.h - th]].forEach(function (o) {
+        steps.push(function () {
+          var c = tileCv || (tileCv = document.createElement('canvas'));
+          c.width = tw; c.height = th; c.getContext('2d').drawImage(src, o[0], o[1], tw, th, 0, 0, tw, th);
+          return detectRaw(c, Math.min(size, 416), o[0], o[1]);
+        });
+      });
+    }
+    var all = [];
+    return steps.reduce(function (p, step) { return p.then(step).then(function (r) { all = all.concat(r); }); }, Promise.resolve()).then(function () {
+      var faces = AI.mergeFaceBoxes(all);
+      var m = AI.matchFaces(faces.map(function (f) { return f.descriptor; }), g);
+      return faces.map(function (f, i) { return { box: f.box, label: m[i].label, dist: m[i].dist, second: m[i].second }; });
     });
   }
   function faceCrop(src, box, size) {
@@ -399,60 +466,146 @@
     });
   };
 
-  /* face enrolment — 5 samples from a live source (this dialog's own camera, or a running lab / attendance source) */
+  /* face enrolment — a guided screen in 3 steps:
+     ① who (and their consent)  ② the camera sees ONE clear face — a live box says what's wrong  ③ five shots, slightly
+     different angles. What is stored is a 128-number face print per shot (not the photo); every camera compares faces to it. */
+  var ENROLL_HINTS = ['بص للكاميرا على طول', 'ميّل راسك شوية يمين', 'ميّل راسك شوية شمال', 'ارفع دقنك شوية', 'بص للكاميرا تاني'];
   function enrollDialog(workerId, done, liveSrc) {
-    var own = !liveSrc, stream = null, closed = false;
-    var vid = h('video', { playsinline: true, muted: true, autoplay: true, style: { width: '100%', borderRadius: '12px', background: '#000', transform: own ? 'scaleX(-1)' : '' } });
-    var consent = h('input', { type: 'checkbox' });
-    var prog = h('div', { class: 'mono', style: { fontSize: '12.5px', minHeight: '18px' } });
-    var profSel = h('select', { class: 'select' });
+    var own = !liveSrc, stream = null, closed = false, capturing = false, checking = false, check = { ok: false }, raf = 0, timer = 0;
+    var vid = h('video', { playsinline: true, muted: true, autoplay: true, style: { position: 'absolute', width: '1px', height: '1px', opacity: 0 } });
+    var pv = h('canvas', { style: { width: '100%', display: 'block', borderRadius: '12px', background: '#000' } });
+    var camMsg = h('div', { style: { position: 'absolute', inset: '0', display: 'grid', placeItems: 'center', textAlign: 'center', padding: '18px', color: '#fff', fontSize: '14px', lineHeight: '1.9', background: 'rgba(0,0,0,.72)', borderRadius: '12px' } },
+      own ? '📷 المتصفح هيسألك عن الكاميرا (فوق على الشمال) — دوس «Allow» أو «سماح»' : 'جارٍ استخدام الكاميرا الشغالة…');
+    var stage = h('div', { style: { position: 'relative', minHeight: '200px' } }, pv, vid, camMsg);
+    var state = h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600', fontSize: '14px', minHeight: '22px' } });
+    var dots = h('div', { style: { display: 'flex', gap: '6px' } });
+    var thumbs = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' } });
+    for (var i = 0; i < 5; i++) { dots.appendChild(h('span', { style: { width: '12px', height: '12px', borderRadius: '50%', border: '2px solid var(--line-3, #456)' } })); thumbs.appendChild(h('div', { style: { aspectRatio: '1', borderRadius: '8px', background: 'var(--bg-3, #111)', border: '1px dashed var(--line-2, #345)' } })); }
+    var consent = h('input', { type: 'checkbox', id: 'enrollConsent' });
+    var profSel = h('select', { class: 'select', id: 'enrollWorker' });
+    var go = h('button', { class: 'btn btn--primary', type: 'button', text: 'ابدأ التسجيل (5 لقطات)', disabled: true });
+    var msg = h('div', { role: 'alert', style: { fontSize: '13px', minHeight: '18px', lineHeight: '1.7' } });
+    var stepEls = [1, 2, 3].map(function (n) { return h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: '10px', fontSize: '13px', border: '1px solid var(--line-2, #345)' } }, h('b', { text: String(n) }), h('span', { text: ['مين الموظف', 'الكاميرا تشوف وشه', '5 لقطات'][n - 1] })); });
+    function setStep(n) { stepEls.forEach(function (el, i) { el.style.background = i + 1 === n ? 'var(--green-dim, rgba(43,161,96,.18))' : ''; el.style.borderColor = i + 1 <= n ? 'var(--green-hi, #45D48C)' : ''; }); }
+    function say(ok, text) { clear(state); state.appendChild(h('span', { style: { width: '10px', height: '10px', borderRadius: '50%', background: ok ? '#45D48C' : '#FAB219', flex: 'none' } })); state.appendChild(h('span', { text: text })); }
     API.get('workers', { limit: 1000 }).then(function (r) {
-      if (!r.items.length) profSel.appendChild(h('option', { value: '', text: 'لا يوجد موظفون — أضف موظفًا أولًا' }));
-      r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id + (w.enrolled ? ' · ✓ مسجل' : '') }); if (w.id === workerId) o.selected = true; profSel.appendChild(o); });
+      if (!r.items.length) profSel.appendChild(h('option', { value: '', text: 'مفيش موظفين — ضيف موظف الأول من «الموظفون والملفات»' }));
+      var pick = workerId || (r.items.filter(function (w) { return !w.enrolled; })[0] || {}).id;
+      r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id + (w.enrolled ? ' · ✓ عنده بصمة (هتتسجل من جديد)' : ' · بدون بصمة') }); if (w.id === pick) o.selected = true; profSel.appendChild(o); });
+      refresh();
     });
-    var go = h('button', { class: 'btn btn--primary', text: 'التقاط وتسجيل الوجه' });
     var source = function () { return own ? vid : liveSrc(); };
-    if (own) openCam().then(function (s) { if (closed) return stopStream(s); stream = s; vid.srcObject = s; return vid.play(); }).catch(function (e) { prog.textContent = camErrMsg(e); });
-    go.addEventListener('click', function () {
-      if (!profSel.value) { prog.textContent = 'اختر الموظف أولًا.'; return; }
-      if (!consent.checked) { prog.textContent = 'يلزم تأكيد الموافقة أولًا.'; return; }
-      var src = source();
-      if (!src || !(src.videoWidth || src.naturalWidth || src.width)) { prog.textContent = 'الكاميرا مش شغالة لسه.'; return; }
-      go.disabled = true;
-      ensureFace().then(function () {
-        var samples = [], tries = 0, lastBox = null;
-        var hints = ['انظر للكاميرا مباشرة', 'أمِل رأسك قليلًا لليمين', 'أمِل رأسك قليلًا لليسار', 'ارفع ذقنك قليلًا', 'انظر للكاميرا مرة أخرى'];
-        function one() {
-          if (closed) throw new Error('أُغلق');
-          prog.textContent = 'التقاط ' + (samples.length + 1) + ' / 5 — ' + hints[samples.length];
-          return faceapi.detectSingleFace(source(), new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })).withFaceLandmarks(true).withFaceDescriptor().then(function (r) {
-            tries++;
-            if (r && r.detection.box.width > 60) { samples.push(Array.from(r.descriptor)); var b = r.detection.box; lastBox = { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }; }
-            if (samples.length < 5 && tries < 25) return new Promise(function (res) { setTimeout(res, 650); }).then(one);
-          });
-        }
-        return one().then(function () {
-          if (samples.length < 3) throw new Error('لم يتم العثور على وجه واضح — قرّب من الكاميرا وحسّن الإضاءة');
-          var photo = null; try { photo = faceCrop(source(), lastBox, 256); } catch (e) { }
-          var wid = profSel.value;
-          return API.post('faces', { workerId: wid, descriptors: samples, mode: 'replace' }).then(function () { return API.post('workers', { id: wid, photo: photo || undefined }); }).then(function (w) {
-            loadFaces(); closeIt(); U.closeModal();
-            U.toast('تم تسجيل بصمة الوجه', w.name + ' — هيتعرف عليه النظام تلقائيًا ويسجل حضوره');
-            if (done) done(w);
-          });
+    if (own) openCam().then(function (s) { if (closed) return stopStream(s); stream = s; vid.srcObject = s; return vid.play(); }).catch(function (e) { camMsg.textContent = '⚠️ ' + camErrMsg(e) + ' — من علامة القفل جنب العنوان، اسمح للكاميرا وافتح الشاشة دي تاني.'; });
+    // live preview + face box, drawn every frame
+    function draw() {
+      if (closed) return;
+      var src = source(), w = src && (src.videoWidth || src.naturalWidth || src.width), hh = src && (src.videoHeight || src.naturalHeight || src.height);
+      if (w && hh) {
+        if (camMsg.parentNode && (!own || vid.videoWidth)) camMsg.remove();
+        if (pv.width !== w || pv.height !== hh) { pv.width = w; pv.height = hh; }
+        var g = pv.getContext('2d'); g.save(); if (own) { g.translate(w, 0); g.scale(-1, 1); } g.drawImage(src, 0, 0, w, hh); g.restore();
+        (check.boxes || []).forEach(function (b) {
+          var x = own ? w - b.x2 : b.x1; g.lineWidth = Math.max(3, w / 220); g.strokeStyle = check.ok ? '#45D48C' : '#FAB219'; g.strokeRect(x, b.y1, b.x2 - b.x1, b.y2 - b.y1);
         });
-      }).catch(function (e) { prog.textContent = 'تعذر التسجيل: ' + e.message; go.disabled = false; });
+      }
+      raf = requestAnimationFrame(draw);
+    }
+    // is there exactly ONE clear face, close enough and lit enough?
+    function inspect() {
+      var src = source(), w = src && (src.videoWidth || src.naturalWidth || src.width), hh = src && (src.videoHeight || src.naturalHeight || src.height);
+      if (!w || !faceapi) return Promise.resolve({ ok: false, boxes: [], why: own ? 'مستني الكاميرا…' : 'مستني صورة من الكاميرا…' });
+      return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })).then(function (all) {
+        var boxes = all.map(function (r) { var b = r.box; return { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }; });
+        var big = boxes.filter(function (b) { return b.x2 - b.x1 > 50; });
+        if (!boxes.length) return { ok: false, boxes: boxes, why: 'مش شايف وش — خلي الموظف يقف قدام الكاميرا ويبص لها' };
+        if (big.length > 1) return { ok: false, boxes: boxes, why: 'فيه أكتر من شخص قدام الكاميرا — لازم الموظف يكون لوحده' };
+        var b = big[0] || boxes[0], fh = b.y2 - b.y1;
+        if (fh < Math.max(90, hh * 0.14)) return { ok: false, boxes: boxes, why: 'الوش صغير — قرّب من الكاميرا (حوالي متر)' };
+        try {
+          var c = document.createElement('canvas'); c.width = 32; c.height = 32; c.getContext('2d').drawImage(src, b.x1, b.y1, b.x2 - b.x1, fh, 0, 0, 32, 32);
+          var d = c.getContext('2d').getImageData(0, 0, 32, 32).data, sum = 0; for (var k = 0; k < d.length; k += 4) sum += 0.3 * d[k] + 0.59 * d[k + 1] + 0.11 * d[k + 2];
+          if (sum / 1024 < 55) return { ok: false, boxes: boxes, why: 'النور ضعيف على الوش — ولّع نور قدام الموظف (مش وراه)' };
+        } catch (e) { }
+        return { ok: true, boxes: boxes, box: b, why: 'الوش واضح ✓' };
+      });
+    }
+    function refresh() {
+      var who = !!profSel.value, agreed = consent.checked;
+      setStep(!who || !agreed ? 1 : capturing ? 3 : 2);
+      go.disabled = capturing || !who || !agreed || !check.ok;
+      if (capturing) return;
+      if (!who) say(false, 'اختار الموظف');
+      else if (!agreed) say(false, 'علّم إن الموظف موافق');
+      else say(check.ok, check.ok ? 'الوش واضح ✓ — دوس «ابدأ التسجيل»' : (check.why || 'مستني الكاميرا…'));
+    }
+    function loop() {
+      if (closed) return;
+      if (!capturing && !checking) {
+        checking = true;
+        ensureFace().then(inspect).then(function (c) { check = c; }, function () { }).then(function () { checking = false; refresh(); });
+      }
+      timer = setTimeout(loop, 350);
+    }
+    profSel.addEventListener('change', function () { resetShots(); refresh(); });
+    consent.addEventListener('change', refresh);
+    function resetShots() { [].forEach.call(dots.children, function (d) { d.style.background = ''; }); [].forEach.call(thumbs.children, function (t) { clear(t); t.style.border = '1px dashed var(--line-2, #345)'; }); }
+    go.addEventListener('click', function () {
+      capturing = true; msg.textContent = ''; resetShots(); refresh();
+      var samples = [], tries = 0, lastBox = null;
+      function one() {
+        if (closed) throw new Error('اتقفلت الشاشة');
+        say(true, 'لقطة ' + (samples.length + 1) + ' من 5 — ' + ENROLL_HINTS[samples.length]);
+        return inspect().then(function (c) {
+          check = c; tries++;
+          if (!c.ok) { say(false, c.why); return; }
+          return faceapi.detectSingleFace(source(), new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })).withFaceLandmarks(true).withFaceDescriptor().then(function (r) {
+            if (!r) return;
+            samples.push(Array.from(r.descriptor)); var b = r.detection.box; lastBox = { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height };
+            dots.children[samples.length - 1].style.background = '#45D48C';
+            var t = thumbs.children[samples.length - 1]; t.style.border = '1px solid #45D48C';
+            try { t.appendChild(h('img', { src: faceCrop(source(), lastBox, 96), alt: '', style: { width: '100%', borderRadius: '8px', display: 'block', transform: own ? 'scaleX(-1)' : '' } })); } catch (e) { }
+          });
+        }).then(function () { if (samples.length < 5 && tries < 40) return new Promise(function (res) { setTimeout(res, 700); }).then(one); });
+      }
+      ensureFace().then(one).then(function () {
+        if (samples.length < 3) throw new Error('ملقطش لقطات كفاية — قرّب من الكاميرا، وخلي النور قدام الموظف، وجرّب تاني');
+        var wid = profSel.value, spread = 0;
+        samples.forEach(function (a, i) { samples.forEach(function (b, j) { if (j > i) spread = Math.max(spread, AI.faceDist(a, b)); }); });
+        if (spread > 0.6) throw new Error('اللقطات مش لنفس الشخص — حد دخل الكادر. خلي الموظف لوحده وجرّب تاني');
+        var near = AI.nearestOther(samples, matcher() || {}, wid);
+        if (near.id && near.d < 0.45) {
+          var opt = [].filter.call(profSel.options, function (o) { return o.value === near.id; })[0];
+          var other = opt ? opt.text.split(' · ')[0] : near.id;
+          throw new Error('الوش ده شبه جدًا بصمة «' + other + '». اتأكد إن الموظف الصح هو اللي واقف. ولو بصمة «' + other + '» متسجلة غلط، امسحها من ملفه الأول.');
+        }
+        var photo = null; try { photo = faceCrop(source(), lastBox, 256); } catch (e) { }
+        return API.post('faces', { workerId: wid, descriptors: samples, mode: 'replace' }).then(function () { return API.post('workers', { id: wid, photo: photo || undefined }); }).then(function (w) {
+          loadFaces();
+          capturing = false; setStep(3);
+          clear(msg); msg.appendChild(h('div', { style: { color: '#45D48C', fontWeight: '700', fontSize: '15px' }, text: '✓ اتسجلت بصمة ' + w.name + ' — الكاميرات هتعرفه من دلوقتي وتسجل حضوره' }));
+          U.toast('تم تسجيل بصمة الوجه', w.name);
+          var opt2 = [].filter.call(profSel.options, function (o) { return o.value === wid; })[0]; if (opt2) opt2.text = w.name + ' · ' + w.id + ' · ✓ عنده بصمة (هتتسجل من جديد)';
+          var next = [].filter.call(profSel.options, function (o) { return /بدون بصمة/.test(o.text); })[0];
+          if (next) { profSel.value = next.value; msg.appendChild(h('div', { class: 'muted', text: 'اخترتلك الموظف اللي بعده: ' + next.text.split(' · ')[0] + ' — خليه يقف قدام الكاميرا.' })); resetShots(); }
+          refresh();
+          if (done) done(w);
+        });
+      }).catch(function (e) { capturing = false; msg.textContent = '⚠️ ' + e.message; refresh(); });
     });
-    function closeIt() { closed = true; stopStream(stream); }
-    U.openModal('تسجيل بصمة وجه موظف', h('div', { style: { display: 'grid', gap: '12px' } },
-      h('label', { class: 'field' }, h('span', { text: 'الموظف' }), profSel),
-      own ? vid : h('div', { class: 'muted', style: { fontSize: '12.5px' }, text: 'هيتم استخدام الكاميرا الشغالة حاليًا — خلي الموظف يقف قدامها لوحده.' }),
-      h('div', { class: 'muted', style: { fontSize: '12px' }, text: 'بيتاخد 5 لقطات للوجه وتتحول لبصمة رقمية (128 رقم) تتحفظ على سيرفر المنصة، وتستخدمها كل الكاميرات للتعرف وتسجيل الحضور. الصورة نفسها مش بتتخزن غير كصورة للملف.' }),
-      h('label', { class: 'switch' }, consent, 'الموظف موافق على تسجيل بصمة الوجه للحضور والسلامة'),
-      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, go,
-        h('button', { class: 'btn btn--ghost', text: 'مسح بصمة هذا الموظف', onclick: function () { if (!profSel.value) return; API.post('faces', { workerId: profSel.value, descriptors: [], mode: 'replace' }).then(function () { loadFaces(); prog.textContent = 'تم مسح بصمة الوجه.'; if (done) done(); }); } })),
-      prog));
+    function closeIt() { closed = true; clearTimeout(timer); cancelAnimationFrame(raf); stopStream(stream); }
+    U.openModal('تسجيل وش موظف', h('div', { style: { display: 'grid', gap: '12px' } },
+      h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, stepEls),
+      h('label', { class: 'field' }, h('span', { text: '① الموظف' }), profSel),
+      h('label', { class: 'switch' }, consent, 'الموظف موافق على تسجيل بصمة وشه للحضور والسلامة'),
+      h('div', { class: 'field' }, h('span', { text: '② الكاميرا — لازم يبان مربع أخضر حوالين الوش' }), stage),
+      state,
+      h('div', { class: 'field' }, h('span', { text: '③ اللقطات' }), dots, thumbs),
+      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, go, h('button', { class: 'btn btn--ghost', type: 'button', text: 'قفل', onclick: function () { U.closeModal(); } })),
+      msg,
+      h('details', { class: 'muted', style: { fontSize: '12.5px', lineHeight: '1.8' } }, h('summary', { text: 'إزاي الوش بيتسجل؟' }),
+        h('div', { text: 'الكاميرا بتاخد 5 لقطات للوش من زوايا مختلفة شوية. كل لقطة بتتحول لبصمة رقمية (128 رقم بيوصفوا ملامح الوش)، والبصمات دي اللي بتتحفظ على السيرفر — مش الصور. لما أي كاميرا تشوف وش، بتحوّله لبصمة وتقارنه ببصمات كل الموظفين: لو قريب بوضوح من موظف واحد يتكتب اسمه، ولو مش متأكد يتكتب «غير معروف». الصورة الوحيدة اللي بتتحفظ هي صورة الملف.' }))));
     U.$('#modalBody').__onClose = closeIt;
+    draw(); loop();
   }
 
   /* ------------------------------------------------------------------ */
@@ -531,6 +684,7 @@
   var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ppeEngine: 'browser' };
   try { Object.assign(LAB, JSON.parse(localStorage.getItem('egic-lab') || '{}')); } catch (e) { }
   LAB.required = { helmet: true, glasses: true, vest: true, gloves: true, ears: true }; // PPE always checks the full set
+  LAB.persistMs = 5000; // an item must be clearly missing for 5 s (wiping sweat, adjusting a visor) before anything is reported
   function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
 
   U.register('live', function (v) {
@@ -546,7 +700,7 @@
     function hasFire() { return LAB.mode === 'fire' || LAB.mode === 'both'; }
     function hasSmoking() { return LAB.mode === 'smoking' || LAB.mode === 'both'; }
 
-    v.appendChild(U.viewHead('المختبر الحي — ذكاء اصطناعي حقيقي', 'الكاميرا تُحلَّل لحظيًا داخل الجهاز. أي مخالفة تُسجَّل بلقطة في ملف العامل وتظهر فورًا في لوحة القيادة.', [h('span', { class: 'badge badge--live', text: 'REAL MODELS · ON-DEVICE' })]));
+    v.appendChild(U.viewHead('المختبر الحي — ذكاء اصطناعي حقيقي', 'الكاميرا بتتحلل لحظيًا. أي كشف بيتسجل بلقطة «بانتظار مراجعة المشرف»، ومابيدخلش ملف العامل غير لما مشرف يأكده.', [h('span', { class: 'badge badge--live', text: 'نماذج حقيقية · على الجهاز' })]));
     if (fileProtocolNotice(v)) return;
 
     // mode selector
@@ -572,23 +726,40 @@
     var empty = h('div', { class: 'lab-empty' }, h('div', null,
       h('div', { style: { width: '64px', height: '64px', margin: '0 auto', borderRadius: '18px', display: 'grid', placeItems: 'center', background: 'rgba(43,161,96,.16)', color: 'var(--green-hi)' } }, U.icon('live')),
       h('h3', { text: 'ابدأ الكشف المباشر' }),
-      h('p', { text: 'قف أمام الكاميرا. سيحدد النظام الخوذة والنظارة والسترة والقفازات وسماعات الأذن، وإن نقص أي منها يلتقط صورة ويسجلها في ملف الموظف.' }),
+      h('p', { text: 'قف أمام الكاميرا. النظام هيشوف الخوذة والنظارة والسترة والقفازات وسماعات الأذن. لو حاجة ناقصة بوضوح لمدة 5 ثواني، هياخد لقطة ويبعتها للمشرف يراجعها.' }),
       h('div', { class: 'row' }, h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })))));
     var loading = h('div', { class: 'lab-loading hidden' }, h('div', { class: 'box' }, h('div', { class: 'spinner' }), h('div', { style: { marginTop: '14px', fontWeight: 600 }, id: 'ldT', text: 'تحميل النماذج…' }), h('div', { class: 'bar' }, h('i', { id: 'ldBar' })), h('div', { class: 'muted mono', style: { fontSize: '11px' }, id: 'ldS', text: '' })));
     var stage = h('div', { class: 'lab-stage' }, canvas, video, img, phoneImg, phoneVid, h('div', { class: 'lab-hud' }, hudL, hudR), h('div', { class: 'lab-brand' }, h('div', { class: 'powered' }, h('span', { class: 'dot' }), 'POWERED BY ', h('b', { text: 'DELMON' }), h('span', { class: 'amp', text: '&' }), h('b', { text: 'DEV SMART X' }))), empty, loading);
-    var left = h('div', null, stage);
+    // second lens / camera — live view beside the AI one (no heavy AI on the second, to stay smooth)
+    var secondImg = h('img', { alt: '', style: { width: '100%', display: 'block', borderRadius: '12px', background: '#020403', aspectRatio: '16 / 9', objectFit: 'cover' } });
+    var secondLabel = h('div', { style: { position: 'absolute', top: '8px', insetInlineStart: '8px', background: 'rgba(0,0,0,.55)', color: '#fff', padding: '4px 10px', borderRadius: '8px', fontSize: '12px' }, text: '' });
+    var secondWrap = h('div', { style: { position: 'relative', flex: '1 1 0', minWidth: '0', display: 'none' } }, secondImg, secondLabel, h('button', { class: 'btn btn--xs', style: { position: 'absolute', top: '8px', insetInlineEnd: '8px' }, onclick: function () { hideSecond(); }, text: '✕ إغلاق' }));
+    var stageRow = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start' } }, h('div', { style: { flex: '1 1 0', minWidth: '0' } }, stage), secondWrap);
+    var left = h('div', null, stageRow);
+    function hideSecond() { secondImg.removeAttribute('src'); secondWrap.style.display = 'none'; }
+    function showSecond(cam) { secondLabel.textContent = '📷 ' + cam.name + ' · بث مباشر'; secondImg.src = (API.state.base || '') + '/api/v1/ipcams/' + cam.id + '/mjpeg?t=' + (+new Date()); secondWrap.style.display = ''; }
+    function pickSecondCam() {
+      fetch((API.state.base || '') + '/api/v1/ipcams', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+        var others = (j.items || []).filter(function (c) { return !(st.ipcam && c.id === st.ipcam.id); });
+        if (!others.length) { U.toast('مفيش كاميرا/عدسة تانية', 'ضيف كاميرا IP تانية الأول من «🌐 كاميرا IP»', { kind: 'critical', ms: 7000 }); return; }
+        if (others.length === 1) { showSecond(others[0]); return; }
+        var box = h('div', { style: { display: 'grid', gap: '8px' } }, others.map(function (c) { return h('button', { class: 'btn', onclick: function () { U.closeModal(); showSecond(c); } }, '📷 ' + c.name); }));
+        U.openModal('اختر العدسة / الكاميرا الثانية', box);
+      }).catch(function () { U.toast('تعذر جلب الكاميرات', '', { kind: 'critical' }); });
+    }
+    U.onCleanup(hideSecond);
     var camSel = h('select', { class: 'select', style: { minWidth: '180px' } }, h('option', { value: '', text: 'الكاميرا الافتراضية' }));
     listCams().then(function (ds) { ds.forEach(function (d, i) { camSel.appendChild(h('option', { value: d.deviceId, text: d.label || ('كاميرا ' + (i + 1)) })); }); });
     var stopBtn = h('button', { class: 'btn', onclick: stop }, U.icon('stop'), 'إيقاف');
     var controls = h('div', { class: 'lab-controls' },
-      h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), stopBtn, camSel,
+      h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('button', { class: 'btn', onclick: pickSecondCam, title: 'اعرض العدسة/الكاميرا التانية جنب دي' }, '📷 عدسة ثانية'), stopBtn, camSel,
       h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.mirror, onchange: function (e) { LAB.mirror = e.target.checked; saveLab(); } }), 'عكس الصورة'),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.sound, onchange: function (e) { LAB.sound = e.target.checked; saveLab(); } }), 'تنبيه صوتي'),
       h('label', { class: 'switch', title: 'الكاميرا تلحق الوش/الشخص وتزوّم تلقائيًا، وتلف ناحية أي مخالفة أو خطر (كاميرات IP المتحركة فقط)' }, h('input', { type: 'checkbox', checked: LAB.autoTrack, onchange: function (e) { LAB.autoTrack = e.target.checked; saveLab(); if (ptzEl) ptzEl.style.opacity = LAB.autoTrack ? '0.5' : '1'; } }), '🎯 تتبّع تلقائي'));
     var engSel = U.select([['browser', 'محرك الذكاء: داخل الجهاز (المتصفح)'], ['titan', 'محرك الذكاء: خادم EGIC AI (Python)']], LAB.ppeEngine, function (x) { LAB.ppeEngine = x; saveLab(); st.tracker = null; prepareModels(); renderSide(); });
     var reqRow = h('div', { class: 'lab-controls' }, engSel, h('span', { class: 'muted', style: { fontSize: '12px' }, text: 'فحص PPE: ' + PPE_KEYS.map(function (k) { return PPE_AR[k]; }).join(' · ') }),
-      h('span', { class: 'muted', style: { fontSize: '12px', marginInlineStart: 'auto' }, text: 'مهلة المحطة (ث):' }), h('input', { class: 'input', type: 'number', min: 3, max: 120, value: LAB.stationSec, style: { width: '70px', height: '30px' }, onchange: function (e) { LAB.stationSec = Math.max(3, +e.target.value || 8); saveLab(); } }));
+      h('label', { class: 'lab-ctl-pair muted', style: { fontSize: '12px' } }, 'مهلة غياب المشغّل (ثانية)', h('input', { class: 'input', id: 'stationSec', type: 'number', min: 3, max: 120, value: LAB.stationSec, style: { width: '70px', height: '30px' }, onchange: function (e) { LAB.stationSec = Math.max(3, +e.target.value || 8); saveLab(); } })));
     left.appendChild(controls); left.appendChild(reqRow);
     var side = h('div', { class: 'lab-side' });
     lab.appendChild(left); lab.appendChild(side);
@@ -768,8 +939,8 @@
       empty.classList.add('hidden');
       prepareModels();
       st.srcKind = 'ipcam';
-      attachIpCam(src, phoneImg, st, function (err) { U.toast('مشكلة في كاميرا IP: ' + src.name, err || 'انقطع البث — السيرفر بيحاول يعيد الاتصال', { kind: 'critical', ms: 8000 }); })
-        .then(function () { if (st.srcKind !== 'ipcam') return; st.src = phoneFrame(st, phoneImg); st.running = true; st.tracker = null; showPtz(src.id); loop(); })
+      attachIpCam(src, phoneImg, st, function (err) { U.toast('مشكلة في كاميرا IP: ' + src.name, err || 'انقطع البث — السيرفر بيحاول يعيد الاتصال', { kind: 'critical', ms: 8000 }); }, phoneVid)
+        .then(function (el) { if (st.srcKind !== 'ipcam') return; st.src = st.phoneMode === 'mjpeg' ? phoneFrame(st, phoneImg) : el; st.running = true; st.tracker = null; showPtz(src.id); loop(); })
         .catch(function (e) { if (st.srcKind !== 'ipcam') return; stopSources(); empty.classList.remove('hidden'); U.toast('تعذر تشغيل كاميرا IP', e.message, { kind: 'critical', ms: 9000 }); });
     }
     // PTZ pad: control a moving / zoomable camera from the platform (ONVIF, via the server). Shows only for IP cameras that accept it.
@@ -852,7 +1023,7 @@
       if (!st.running || st.destroyed) return;
       var now = performance.now();
       if (!st.startedAt) st.startedAt = now;
-      var canvasSrc = (st.srcKind === 'phone' && st.phoneMode === 'mjpeg') || st.srcKind === 'ipcam';
+      var canvasSrc = (st.srcKind === 'phone' || st.srcKind === 'ipcam') && st.phoneMode === 'mjpeg';
       // display the camera frame every rAF so the video is smooth; for mjpeg/ipcam draw the <img> directly (one copy instead of two)
       var disp = canvasSrc ? phoneImg : st.src;
       var dw = disp && (disp.videoWidth || disp.naturalWidth || disp.width), dh = disp && (disp.videoHeight || disp.naturalHeight || disp.height);
@@ -883,10 +1054,10 @@
       if (canvasSrc) st.src = phoneFrame(st, phoneImg) || st.src;
       var fsrc = st.src;
       var fsize = (st.inferEMA || 0) > 200 ? 320 : (st.inferEMA || 0) > 110 ? 416 : 512; // smaller face net on slow devices
-      detectFaces(fsrc, fsize).then(function (faces) {
+      detectFaces(fsrc, fsize, { tiles: (st.inferEMA || 0) < 120 }).then(function (faces) {
         st.faces = faces; st.facesT = Date.now();
         // only trust a face big enough to be reliable for identity — tiny far faces cause wrong matches
-        var minH = Math.max(46, d.h * 0.07);
+        var minH = Math.max(40, d.h * 0.035);
         var good = faces.filter(function (f) { return (f.box.y2 - f.box.y1) >= minH; });
         // each recognised face is assigned to its OWN person track, so several employees are identified at once
         if (st.tracker) good.forEach(function (f) { st.tracker.assignIdentity(f.box, f.label === 'unknown' ? '__unknown__' : f.label, 1 - f.dist); });
@@ -931,16 +1102,32 @@
       if (workerCache[id]) return Promise.resolve(workerCache[id]);
       return API.get('workers/' + encodeURIComponent(id)).then(function (w) { workerCache[id] = w; return w; }).catch(function () { return null; });
     }
+    // Who did it: only the face-confirmed identity of THAT person's track. When unsure → null («غير محدد»),
+    // and a supervisor identifies the worker from the evidence. Never guess between people.
     function resolveWorker(track) {
       if (!track) return null;
-      var seen = st.tracker && st.last ? st.tracker.tracks.filter(function (t) { return t.seen === st.last.t; }) : [track];
-      var primary = seen.slice().sort(function (a, b) { return (b.box.x2 - b.box.x1) * (b.box.y2 - b.box.y1) - (a.box.x2 - a.box.x1) * (a.box.y2 - a.box.y1); })[0] || track;
-      if (LAB.idMode === 'auto' && hasFaces()) {
-        if (track.identity) return track.identity;
-        // no face match yet: a single person in front of the checkpoint camera belongs to the selected profile
-        return seen.length <= 1 && !track.idVotes.__unknown__ ? LAB.profileId : null;
+      if (track.identity) return track.identity;
+      if (LAB.idMode === 'fixed' && LAB.profileId) {
+        // «ربط بملف محدد» is for a one-person checkpoint: valid only while exactly one person is in view
+        var seen = st.tracker && st.last ? st.tracker.tracks.filter(function (t) { return t.seen === st.last.t; }) : [track];
+        return seen.length === 1 && seen[0] === track ? LAB.profileId : null;
       }
-      return track === primary ? LAB.profileId : null;
+      return null;
+    }
+    // the person track a detection belongs to (a cigarette in the hand, a fallen body, a pose) — or null
+    function trackFor(box) {
+      if (!box || !st.tracker) return null;
+      var c = { x: (box.x1 + box.x2) / 2, y: (box.y1 + box.y2) / 2 }, best = null, bs = 0, nowT = Date.now();
+      st.tracker.tracks.forEach(function (t) {
+        if (nowT - t.seen > 2500) return;
+        var b = t.box, s = AI.iou(b, box);
+        if (c.x >= b.x1 && c.x <= b.x2 && c.y >= b.y1 && c.y <= b.y2) {
+          var dx = c.x - (b.x1 + b.x2) / 2, dy = c.y - (b.y1 + b.y2) / 2, half = Math.max(1, Math.hypot(b.x2 - b.x1, b.y2 - b.y1) / 2);
+          s = Math.max(s, 0.3 + 0.2 * (1 - Math.min(1, Math.hypot(dx, dy) / half)));
+        }
+        if (s > bs) { bs = s; best = t; }
+      });
+      return bs >= 0.3 ? best : null;
     }
 
     // ---------- report PPE violation ----------
@@ -966,9 +1153,11 @@
       var imgUrl = snapshot(function (g) {
         var fs = Math.max(14, Math.round(d.w / 55));
         corners(g, track.box, COL.bad, Math.max(3, d.w / 320));
-        items.forEach(function (k) { var it = track.items[k]; if (it && it.box) { g.setLineDash([10, 7]); g.strokeStyle = COL.bad; g.lineWidth = Math.max(3, d.w / 360); g.strokeRect(it.box.x1, it.box.y1, it.box.x2 - it.box.x1, it.box.y2 - it.box.y1); g.setLineDash([]); label(g, it.box.x1, it.box.y1, PPE_EN[k] + ' · بدون ' + PPE_AR[k], 'rgba(170,20,20,.92)', fs); } });
+        // item boxes without text (dashed red = missing, thin green = worn) + ONE readable line per person
+        items.forEach(function (k) { var it = track.items[k]; if (it && it.box) { g.setLineDash([10, 7]); g.strokeStyle = COL.bad; g.lineWidth = Math.max(3, d.w / 360); g.strokeRect(it.box.x1, it.box.y1, it.box.x2 - it.box.x1, it.box.y2 - it.box.y1); g.setLineDash([]); } });
         PPE_KEYS.forEach(function (k) { var it = track.items[k]; if (it && it.state === 'OK' && it.box) { g.strokeStyle = COL.ok; g.lineWidth = Math.max(2, d.w / 480); g.strokeRect(it.box.x1, it.box.y1, it.box.x2 - it.box.x1, it.box.y2 - it.box.y1); } });
-        label(g, track.box.x1, track.box.y1, (workerCache[wid] ? workerCache[wid].name : 'عامل') + ' · مخالفة معدات وقاية', 'rgba(120,14,14,.95)', fs);
+        var who = workerCache[wid] ? workerCache[wid].name : 'عامل غير محدد';
+        label(g, Math.max(0, Math.min(track.box.x1, d.w * 0.55)), Math.max(fs * 2, track.box.y1), who + ' · ناقص: ' + items.map(function (k) { return PPE_AR[k]; }).join('، '), 'rgba(120,14,14,.95)', fs);
       }, d, title);
       var incident = 'INC-' + Date.now().toString(36).toUpperCase();
       var conf = Math.max.apply(null, [0.8].concat(items.map(function (k) { return track.items[k] && track.items[k].score ? track.items[k].score : 0.85; })));
@@ -978,7 +1167,7 @@
       workerInfo(wid).then(function (w) {
         var posts = items.map(function (k) { return API.post('events', { type: PPE_TYPES[k], workerId: wid, cameraId: camId(), conf: Math.round(conf * 100) / 100, source: 'live-ai', incident: incident, missing: items, durationSec: Math.round((Date.now() - (track.since[k] || Date.now())) / 1000) + 1, evidence: { kind: 'live', image: imgUrl, model: ppeEng === 'titan' ? 'TITAN-PPE ppe_hf.onnx' : 'YOLOv8s-SH17' } }); });
         return Promise.all(posts).then(function (evs) {
-          U.toast('تم تسجيل مخالفة ← ملف ' + (w ? w.name : 'غير محدد'), items.map(function (k) { return 'بدون ' + PPE_AR[k]; }).join(' · ') + ' · ' + (evs[0] ? evs[0].id : ''), { kind: 'live', img: imgUrl, action: wid ? ['فتح الملف', function () { U.navigate('#/workers/' + wid); }] : null, ms: 7000 });
+          U.toast('كشف بانتظار مراجعة المشرف' + (w ? ' · ' + w.name + '؟' : ''), items.map(function (k) { return 'بدون ' + PPE_AR[k]; }).join(' · ') + ' · ' + (evs[0] ? evs[0].id : ''), { kind: 'live', img: imgUrl, action: evs[0] ? ['مراجعة', function () { U.openEvent(evs[0]); }] : null, ms: 7000 });
         });
       });
     }
@@ -990,39 +1179,64 @@
 
     // ---------- fire · smoke · smoking ----------
     var HZ_RULE = {
-      fire: { need: 2, win: 4, type: 'FIRE_DETECTED', sev: 'CRITICAL', cool: 30000, ar: 'حريق', model: 'YOLOv8n · D-Fire' },
+      fire: { need: 3, win: 5, type: 'FIRE_DETECTED', sev: 'CRITICAL', cool: 30000, ar: 'حريق', model: 'YOLOv8n · D-Fire' },
       smoke: { need: 4, win: 6, type: 'SMOKE_DETECTED', sev: 'HIGH', cool: 45000, ar: 'دخان', model: 'YOLOv8n · D-Fire' },
       smoking: { need: 4, win: 6, type: 'SMOKING_DETECTED', sev: 'HIGH', cool: 45000, ar: 'تدخين', model: 'YOLOv8 · cigarette/vape' }
     };
     var SMOKING_LABELS = { cigarette: 'سيجارة', vape: 'فيب', smoke: 'دخان سيجارة' };
+    // only a cigarette-sized cigarette/vape at a person's head/hands is smoking — furnace steam and glare are
+    // read as "smoke" (and a whole fume cloud as a "cigarette") on the EGIC site footage. Same rule as app/models/smoking.py
+    function plausibleCigarettes(dets, d) {
+      var persons = dets.filter(function (x) { return x.label === 'person' && x.score >= 0.35; });
+      if (dets.raw) return dets.filter(function (x) { return x.label === 'cigarette' || x.label === 'vape'; }); // already filtered by the AI server
+      return dets.filter(function (x) {
+        if (x.label !== 'cigarette' && x.label !== 'vape') return false;
+        if (x.x2 - x.x1 > d.w * 0.15 || x.y2 - x.y1 > d.h * 0.15) return false;
+        var cx = (x.x1 + x.x2) / 2, cy = (x.y1 + x.y2) / 2;
+        return persons.some(function (p) { var pw = p.x2 - p.x1, ph = p.y2 - p.y1; return cx >= p.x1 - pw * 0.15 && cx <= p.x2 + pw * 0.15 && cy >= p.y1 - ph * 0.05 && cy <= p.y1 + ph * 0.75; });
+      });
+    }
     st.hz = { fire: [], smoke: [], smoking: [], cool: {}, view: {} };
     function hazards(kind, dets, d, now) {
       var groups = kind === 'fire'
         ? { fire: dets.filter(function (x) { return x.label === 'fire'; }), smoke: dets.filter(function (x) { return x.label === 'smoke'; }) }
-        : { smoking: dets.filter(function (x) { return SMOKING_LABELS[x.label]; }) };
+        : { smoking: plausibleCigarettes(dets, d) };
       if (kind === 'smoking' && dets.raw && dets.raw.smoking === false) groups.smoking = groups.smoking.filter(function (x) { return x.score >= 0.5; });
       st.hz.view[kind] = { dets: kind === 'fire' ? groups.fire.concat(groups.smoke) : groups.smoking, t: now };
       Object.keys(groups).forEach(function (k) {
-        var R = HZ_RULE[k], w = st.hz[k];
-        w.push(groups[k].length > 0); while (w.length > R.win) w.shift();
-        var hits = w.filter(Boolean).length;
+        var R = HZ_RULE[k], w = st.hz[k], hits;
+        if (k === 'smoking') {
+          // smoking is confirmed per person: the hits must come from the same spot, not from different people in the frame
+          var top = groups.smoking.slice().sort(function (a, b) { return b.score - a.score; })[0];
+          var cx = top ? (top.x1 + top.x2) / 2 : 0, cy = top ? (top.y1 + top.y2) / 2 : 0, near = d.w * 0.12;
+          w.push(top ? { x: cx, y: cy } : null); while (w.length > R.win) w.shift();
+          hits = top ? w.filter(function (p) { return p && Math.hypot(p.x - cx, p.y - cy) < near; }).length : 0;
+        } else {
+          w.push(groups[k].length > 0); while (w.length > R.win) w.shift();
+          hits = w.filter(Boolean).length;
+        }
         if (groups[k].length && hits >= R.need && (!st.hz.cool[k] || now - st.hz.cool[k] > R.cool)) { st.hz.cool[k] = now; raiseHazard(k, groups[k], d); }
       });
     }
     // Fall from the PERSON box (any mode with the PPE/person detector): a clearly horizontal body on the ground
     function checkPersonFall(people, d, now) {
       var B = st.behavior;
-      var down = (people || []).filter(function (p) { var b = p.box; return (b.x2 - b.x1) > (b.y2 - b.y1) * 1.5 && (b.y2 - b.y1) > d.h * 0.07; });
-      if (down.length) { if (!B.pfallSince) B.pfallSince = now; } else B.pfallSince = 0;
-      if (B.pfallSince && now - B.pfallSince > 1200 && (!B.cool.fall || now - B.cool.fall > 30000)) {
+      // a body cut off by the frame edge (close-up: head + shoulders + a raised hand) is wide too — it can't be judged
+      var down = (people || []).filter(function (p) { var b = p.box; return !cutOff(b, d) && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.5 && (b.y2 - b.y1) > d.h * 0.07; });
+      var big = down.sort(function (a, b) { return (b.box.x2 - b.box.x1) * (b.box.y2 - b.box.y1) - (a.box.x2 - a.box.x1) * (a.box.y2 - a.box.y1); })[0];
+      // a person down = horizontal AND staying in place for 3 s (someone walking past a low machine, or bending, isn't)
+      var bc = big ? { x: (big.box.x1 + big.box.x2) / 2, y: (big.box.y1 + big.box.y2) / 2, w: big.box.x2 - big.box.x1 } : null;
+      if (bc && B.pfallAt && Math.hypot(bc.x - B.pfallAt.x, bc.y - B.pfallAt.y) > B.pfallAt.w * 0.5) B.pfallSince = 0;
+      if (bc) { if (!B.pfallSince) { B.pfallSince = now; B.pfallAt = bc; } } else { B.pfallSince = 0; B.pfallAt = null; }
+      if (B.pfallSince && now - B.pfallSince > 3000 && (!B.cool.fall || now - B.cool.fall > 30000)) {
         B.cool.fall = now;
-        var big = down.sort(function (a, b) { return (b.box.x2 - b.box.x1) * (b.box.y2 - b.box.y1) - (a.box.x2 - a.box.x1) * (a.box.y2 - a.box.y1); })[0];
         raiseFall(big.box, d);
       }
     }
+    function cutOff(b, d) { return b.y2 > d.h * 0.96 || b.y1 < d.h * 0.02 || b.x1 < d.w * 0.015 || b.x2 > d.w * 0.985; }
     function raiseFall(box, d) {
       st.alertTarget = { box: box, t: performance.now() };
-      var wid = (LAB.idMode === 'fixed' || !hasFaces()) ? LAB.profileId : (st.tracker && st.tracker.tracks[0] && st.tracker.tracks[0].identity) || null;
+      var wid = resolveWorker(trackFor(box));
       var imgUrl = snapshot(function (g) {
         var fs = Math.max(14, Math.round(d.w / 55));
         g.setLineDash([]); g.strokeStyle = COL.bad; g.lineWidth = Math.max(3, d.w / 300); g.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
@@ -1045,7 +1259,7 @@
       }, d, 'EGIC · إنذار ' + R.ar + ' · ' + nowStr());
       st.captures.unshift({ img: imgUrl, title: 'إنذار ' + R.ar + ' · ' + U.fTime(Date.now()) }); renderCaptures();
       stage.classList.remove('is-alert'); void stage.offsetWidth; stage.classList.add('is-alert');
-      var wid = k === 'smoking' ? (LAB.idMode === 'fixed' || !hasFaces() ? LAB.profileId : (st.tracker && st.tracker.tracks[0] && st.tracker.tracks[0].identity) || LAB.profileId) : null;
+      var wid = k === 'smoking' ? resolveWorker(trackFor(best)) : null;
       var body = { type: R.type, workerId: wid, cameraId: camId(), conf: best ? Math.round(best.score * 100) / 100 : 0.9, source: 'live-' + (k === 'smoking' ? 'smoking' : 'fire'), sev: R.sev, evidence: { kind: 'live', image: imgUrl, model: (ppeEng === 'titan' ? 'EGIC AI · ' : '') + (k === 'smoking' && ppeEng === 'titan' ? 'Ensemble YOLOv8 + YOLO11m' : R.model) }, note: k === 'smoking' ? 'رُصد تدخين (' + dets.map(function (x) { return SMOKING_LABELS[x.label]; }).filter(Boolean).join('، ') + ') في منطقة يُمنع فيها التدخين' : 'رصد ' + R.ar + ' مؤكد عبر ' + R.need + ' إطارات متتالية' };
       var fallback = { type: R.type, ts: Date.now(), conf: body.conf, sev: R.sev, cameraId: body.cameraId, evidence: { model: body.evidence.model }, incident: 'HZ-' + Date.now().toString(36) };
       API.post('events', body).then(function (ev) {
@@ -1063,14 +1277,14 @@
       B.analysis = primary ? AI.analyzePose(primary) : null;
       var a = B.analysis;
       if (a && a.sos) { if (!B.sosSince) B.sosSince = now; } else B.sosSince = 0;
-      if (a && a.fall) { if (!B.fallSince) B.fallSince = now; } else B.fallSince = 0;
+      if (a && a.fall && !cutOff(primary, d)) { if (!B.fallSince) B.fallSince = now; } else B.fallSince = 0;
       if (a && a.trunkAngle != null && a.trunkAngle >= 45 && !a.fall) { if (!B.ergoSince) B.ergoSince = now; } else B.ergoSince = 0;
       function fire(key, type, ms, cool, text, sev) {
         if (!B.cool[key] || now - B.cool[key] > cool) {
           B.cool[key] = now;
           if (primary && type !== 'UNATTENDED_STATION') st.alertTarget = { box: primary, t: performance.now() }; // auto-track swings to the fall/SOS
 
-          var wid = LAB.idMode === 'fixed' || !hasFaces() ? LAB.profileId : (st.tracker && st.tracker.tracks[0] && st.tracker.tracks[0].identity) || LAB.profileId;
+          var wid = type === 'UNATTENDED_STATION' ? null : resolveWorker(trackFor(primary));
           var imgUrl = snapshot(function (g) { drawPoses(g, poses, d, false, true); if (type === 'UNATTENDED_STATION') drawRoi(g, roi, true, d); }, d, 'EGIC · ' + text + ' · ' + nowStr());
           st.captures.unshift({ img: imgUrl, title: text + ' · ' + U.fTime(now) }); renderCaptures();
           stage.classList.remove('is-alert'); void stage.offsetWidth; stage.classList.add('is-alert');
@@ -1080,8 +1294,8 @@
           });
         }
       }
-      if (B.sosSince && now - B.sosSince > 1500) fire('sos', 'SOS_GESTURE', 1500, 20000, 'إشارة استغاثة يدوية', 'CRITICAL');
-      if (B.fallSince && now - B.fallSince > 1200) fire('fall', 'FALL', 1200, 30000, 'سقوط / شخص على الأرض', 'CRITICAL');
+      if (B.sosSince && now - B.sosSince > 2500) fire('sos', 'SOS_GESTURE', 2500, 20000, 'إشارة استغاثة يدوية', 'CRITICAL');
+      if (B.fallSince && now - B.fallSince > 3000) fire('fall', 'FALL', 3000, 30000, 'سقوط / شخص على الأرض', 'CRITICAL');
       if (B.ergoSince && now - B.ergoSince > 3000) fire('ergo', 'ERGONOMIC_RISK', 3000, 30000, 'وضعية عمل خطرة (انحناء الظهر)', 'LOW');
       if (B.present && B.absentSince && now - B.absentSince > LAB.stationSec * 1000) { fire('station', 'UNATTENDED_STATION', 0, 30000, 'ماكينة بدون مشغّل', 'MEDIUM'); B.present = false; }
     }
@@ -1149,7 +1363,7 @@
       if (st.faces && st.faces.length && LAB.idMode === 'auto') st.faces.forEach(function (f) { var b = mir ? mirrorBox(f.box, d.w) : f.box; g.strokeStyle = 'rgba(247,146,36,.85)'; g.lineWidth = 1.5; g.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1); });
       // HUD chips
       clear(hudL); clear(hudR);
-      hudL.appendChild(h('span', { class: 'hud-chip rec', text: st.srcKind === 'camera' ? 'LIVE · P01-CAM-LIVE' : st.srcKind === 'ipcam' ? 'LIVE · 🌐 ' + camName() + (st.phoneFps ? ' · ' + st.phoneFps + ' FPS' : '') : st.srcKind === 'phone' ? 'LIVE · 📱 MOBILE CAM · ' + (st.phoneMode === 'rtc' ? 'WebRTC' : 'RELAY') + (st.phoneFps ? ' · ' + st.phoneFps + ' FPS' : '') : st.srcKind === 'video' ? 'VIDEO FILE' : 'IMAGE' }));
+      hudL.appendChild(h('span', { class: 'hud-chip rec', text: st.srcKind === 'camera' ? 'LIVE · P01-CAM-LIVE' : st.srcKind === 'ipcam' ? 'LIVE · 🌐 ' + camName() + (st.phoneMode === 'rtc' ? ' · بث فيديو' : ' · صور JPEG') + (st.phoneFps ? ' · ' + st.phoneFps + ' FPS' : '') : st.srcKind === 'phone' ? 'LIVE · 📱 MOBILE CAM · ' + (st.phoneMode === 'rtc' ? 'WebRTC' : 'RELAY') + (st.phoneFps ? ' · ' + st.phoneFps + ' FPS' : '') : st.srcKind === 'video' ? 'VIDEO FILE' : 'IMAGE' }));
       hudL.appendChild(h('span', { class: 'hud-chip', text: st.srcKind === 'ipcam' ? U.siteName((S.cams[camId()] || {}).siteId || 'PLT-01') + ' · ' + camId() : 'نقطة فحص الوقاية · المصنع 01' }));
       hudR.appendChild(h('span', { class: 'hud-chip', text: (st.fps ? st.fps + ' FPS · ' : '') + st.ms + ' ms' }));
       hudR.appendChild(h('span', { class: 'hud-chip', text: (ppeEng === 'titan' ? 'EGIC AI SERVER' : faceapi ? faceapi.tf.getBackend().toUpperCase() : '') + ' · ON-DEVICE' }));
@@ -1312,8 +1526,8 @@
       stopSources(); empty.classList.add('hidden'); prepare();
       st.gen = (st.gen || 0) + 1; st.voter = null; st.lastRead = null; st.srcKind = 'ipcam';
       clear(readBox).appendChild(h('div', { class: 'muted', text: 'جارٍ استقبال صورة الكاميرا ' + src.name + '…' }));
-      attachIpCam(src, phoneImg, st, function (err) { U.toast('مشكلة في كاميرا IP: ' + src.name, err || 'انقطع البث', { kind: 'critical', ms: 8000 }); })
-        .then(function () { if (st.srcKind !== 'ipcam') return; st.src = phoneFrame(st, phoneImg); st.running = true; loop(); })
+      attachIpCam(src, phoneImg, st, function (err) { U.toast('مشكلة في كاميرا IP: ' + src.name, err || 'انقطع البث', { kind: 'critical', ms: 8000 }); }, phoneVid)
+        .then(function (el) { if (st.srcKind !== 'ipcam') return; st.src = st.phoneMode === 'mjpeg' ? phoneFrame(st, phoneImg) : el; st.running = true; loop(); })
         .catch(function (e) { if (st.srcKind !== 'ipcam') return; stopSources(); empty.classList.remove('hidden'); U.toast('تعذر تشغيل كاميرا IP', e.message, { kind: 'critical', ms: 9000 }); });
     }
     function startCamera() {
@@ -1326,7 +1540,7 @@
 
     function loop() {
       if (!st.running || st.destroyed) return;
-      if ((st.srcKind === 'phone' && st.phoneMode === 'mjpeg') || st.srcKind === 'ipcam') st.src = phoneFrame(st, phoneImg) || st.src;
+      if ((st.srcKind === 'phone' || st.srcKind === 'ipcam') && st.phoneMode === 'mjpeg') st.src = phoneFrame(st, phoneImg) || st.src;
       var s = st.src, W = s.videoWidth || s.naturalWidth || s.width, H = s.videoHeight || s.naturalHeight || s.height;
       if (W && H) {
         if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
