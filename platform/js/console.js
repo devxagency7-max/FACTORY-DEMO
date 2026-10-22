@@ -104,8 +104,10 @@
   function num(n, d) { if (n === null || n === undefined || isNaN(n)) return '—'; return (+n).toLocaleString('en-US', { maximumFractionDigits: d == null ? 1 : d }); }
   function sevBadge(sev) { return h('span', { class: 'badge badge--' + (SEV_CLASS[sev] || 'neutral'), text: ENG.SEV_AR[sev] || sev }); }
   function statusBadge(st) { var c = st === 'OPEN' ? 'critical' : st === 'RESOLVED' ? 'good' : st === 'FALSE_POSITIVE' ? 'neutral' : 'medium'; return h('span', { class: 'badge badge--' + c, text: AR_STATUS[st] || st }); }
+  var REVIEW = { PENDING: ['بانتظار مراجعة المشرف', 'medium'], CONFIRMED: ['مخالفة مؤكدة', 'high'], REJECTED: ['ليست مخالفة', 'neutral'] };
+  function reviewBadge(r) { var x = REVIEW[r]; return x ? h('span', { class: 'badge badge--' + x[1], text: x[0] }) : null; }
   function decBadge(d) { var c = d === 'AUTHORIZED' ? 'good' : d === 'VISITOR' ? 'low' : d === 'UNKNOWN' ? 'medium' : d === 'BLACKLISTED' ? 'critical' : 'high'; return h('span', { class: 'badge badge--' + c, text: AR_DEC[d] || d }); }
-  function srcTag(src) { return String(src || '').indexOf('live') === 0 ? h('span', { class: 'tag-real', text: 'LIVE AI · حقيقي' }) : src === 'demo' ? h('span', { class: 'tag-demo', text: 'DEMO CHAIN' }) : h('span', { class: 'tag-demo', text: 'SIM' }); }
+  function srcTag(src) { src = String(src || ''); return src.indexOf('live') === 0 || src === 'ai-engine' ? h('span', { class: 'tag-real', text: 'كاميرا حقيقية' }) : src === 'demo' ? h('span', { class: 'tag-demo', text: 'سلسلة عرض' }) : h('span', { class: 'tag-demo', text: 'محاكاة' }); }
   function initials(name) { var p = String(name || '?').trim().split(/\s+/); return (p[0] || '?').charAt(0) + (p[1] ? p[1].charAt(0) : ''); }
 
   var S = { site: 'ALL', meta: null, route: 'overview', param: null, cleanup: [], unread: 0, summary: null, faceIndex: {} };
@@ -194,7 +196,9 @@
       var img = evidenceSrc(e, 640);
       var body = h('div', { style: { display: 'grid', gap: '16px' } },
         h('div', { style: { position: 'relative' } }, h('img', { src: img, alt: 'دليل الحدث', style: { width: '100%', borderRadius: '12px', border: '1px solid var(--line-2)', cursor: 'zoom-in' }, onclick: function () { imageModal(img, e.typeAr + ' · ' + e.id); } }), h('div', { style: { position: 'absolute', top: '10px', insetInlineStart: '10px' } }, srcTag(e.source))),
-        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, sevBadge(e.sev), statusBadge(e.status), h('span', { class: 'chip', text: (ENG.GROUP_AR[e.group] || e.group) }), e.missing && e.missing.length > 1 ? h('span', { class: 'chip', text: 'حادثة مجمّعة: ' + e.missing.length + ' عناصر' }) : null),
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, sevBadge(e.sev), reviewBadge(e.review) || statusBadge(e.status), h('span', { class: 'chip', text: (ENG.GROUP_AR[e.group] || e.group) }), e.missing && e.missing.length > 1 ? h('span', { class: 'chip', text: 'حادثة مجمّعة: ' + e.missing.length + ' عناصر' }) : null),
+        e.review === 'PENDING' ? h('div', { class: 'card', style: { padding: '10px 14px', fontSize: '13px', lineHeight: '1.8', borderColor: 'rgba(247,146,36,.5)' } }, 'ده كشف من النظام، ', h('b', { text: 'لسه مش مخالفة' }), '. مش هيتحسب على أي عامل غير لما مشرف يراجع الدليل ويأكده باسمه.') : null,
+        e.review == null && e.source && String(e.source).indexOf('live') === 0 ? h('div', { class: 'muted', style: { fontSize: '12.5px' }, text: 'تنبيه سلامة: بيستدعي تدخل سريع، ومش بيتسجل كمخالفة على أي عامل.' }) : null,
         h('dl', { class: 'kv' },
           h('dt', { text: 'رقم الحدث' }), h('dd', { class: 'mono', text: e.id }),
           h('dt', { text: 'المخالفة' }), h('dd', { text: e.typeAr + ' · ' + e.typeEn }),
@@ -202,12 +206,19 @@
           h('dt', { text: 'الكاميرا' }), h('dd', null, h('span', { class: 'mono', text: e.cameraId || '—' }), e.cameraName ? h('span', { class: 'muted', text: ' · ' + e.cameraName }) : null),
           h('dt', { text: 'التوقيت' }), h('dd', { class: 'mono', text: fDate(e.ts) + ' ' + fTime(e.ts) + ' (القاهرة)' }),
           h('dt', { text: 'الثقة (AI)' }), h('dd', { class: 'mono', text: Math.round((e.conf || 0) * 100) + '%' }),
-          h('dt', { text: 'العامل' }), h('dd', null, e.workerId ? h('a', { href: '#/workers/' + e.workerId, text: (e.workerName || '') + ' · ' + e.workerId, onclick: closeDrawer }) : h('span', { class: 'muted', text: 'غير محدد الهوية' })),
+          h('dt', { text: 'العامل' }), h('dd', null, e.workerId ? h('a', { href: '#/workers/' + e.workerId, text: (e.workerName || '') + ' · ' + e.workerId, onclick: closeDrawer }) : h('span', { class: 'muted', text: 'غير محدد الهوية' }), e.workerId && e.review === 'PENDING' ? h('span', { class: 'muted', text: ' (اقتراح النظام — محتاج تأكيد)' }) : null),
+          e.review && e.review !== 'PENDING' ? h('dt', { text: 'قرار المشرف' }) : null,
+          e.review && e.review !== 'PENDING' ? h('dd', null, h('b', { text: REVIEW[e.review][0] }), h('span', { class: 'muted', text: ' · ' + (e.reviewer || 'غير محدد') + (e.reviewTs ? ' · ' + fDate(e.reviewTs) + ' ' + fHM(e.reviewTs) : '') }), e.reviewNote ? h('div', { text: e.reviewNote }) : null) : null,
           h('dt', { text: 'القسم / الوردية' }), h('dd', { text: (e.dept || '—') + ' · الوردية ' + ({ A: 'أ', B: 'ب', C: 'ج' })[e.shift || 'A'] }),
           h('dt', { text: 'المسؤول' }), h('dd', { text: e.assignee || '—' }),
           h('dt', { text: 'زمن الاستجابة' }), h('dd', { class: 'mono', text: e.ackTs ? Math.round((e.ackTs - e.ts) / 1000) + ' ث' : '—' }),
           h('dt', { text: 'الدليل' }), h('dd', { text: e.evidence && e.evidence.image ? 'لقطة حقيقية من الكاميرا (مخزنة داخليًا)' : 'لا توجد صورة (حدث محاكاة)' }),
           e.note ? h('dt', { text: 'ملاحظة' }) : null, e.note ? h('dd', { text: e.note }) : null),
+        e.review != null ? h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          e.review === 'PENDING' ? h('button', { class: 'btn btn--sm btn--primary', text: 'تأكيد المخالفة', onclick: function () { reviewDialog(e, 'confirm', render); } }) : null,
+          e.review === 'PENDING' ? h('button', { class: 'btn btn--sm', text: 'ليست مخالفة', onclick: function () { reviewDialog(e, 'reject', render); } }) : null,
+          e.review === 'PENDING' ? h('button', { class: 'btn btn--sm btn--ghost', text: e.workerId ? 'تغيير العامل' : 'تحديد العامل', onclick: function () { reviewDialog(e, 'worker', render); } }) : null,
+          e.review !== 'PENDING' ? h('button', { class: 'btn btn--sm btn--ghost', text: 'إعادة فتح المراجعة', onclick: function () { act(e, 'reopen'); } }) : null) :
         h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
           e.status === 'OPEN' ? h('button', { class: 'btn btn--sm', text: 'استلام', onclick: function () { act(e, 'ack'); } }) : null,
           e.status === 'OPEN' || e.status === 'ACK' ? h('button', { class: 'btn btn--sm', text: 'إسناد لمشرف السلامة', onclick: function () { act(e, 'assign'); } }) : null,
@@ -216,8 +227,45 @@
           e.status === 'RESOLVED' || e.status === 'FALSE_POSITIVE' ? h('button', { class: 'btn btn--sm btn--ghost', text: 'إعادة فتح', onclick: function () { act(e, 'reopen'); } }) : null));
       openDrawer(h('div', null, h('div', { class: 'card-t', text: 'تفاصيل الحدث' }), h('b', { text: e.typeAr, style: { fontSize: '17px' } })), body);
     }
-    function act(e, action) { API.post('events/' + e.id + '/action', { action: action }).then(function (d) { render(d); toast('تم تحديث الحدث', AR_STATUS[d.status] + ' · ' + d.id); }); }
+    function act(e, action) { API.post('events/' + e.id + '/action', { action: action, actor: reviewerName() }).then(function (d) { render(d); toast('تم تحديث الحدث', (d.review ? REVIEW[d.review][0] : AR_STATUS[d.status]) + ' · ' + d.id); }); }
     render(ev);
+  }
+
+  /* supervisor review: the only way a detection becomes a violation on a worker's record */
+  function reviewerName() { try { return localStorage.getItem('egic-reviewer') || ''; } catch (x) { return ''; } }
+  function saveReviewer(n) { try { localStorage.setItem('egic-reviewer', n); } catch (x) { } }
+  function reviewDialog(e, mode, done) {
+    var title = mode === 'confirm' ? 'تأكيد المخالفة' : mode === 'reject' ? 'ليست مخالفة' : 'تحديد العامل';
+    var hint = mode === 'confirm'
+      ? 'التأكيد بيضيف المخالفة لملف العامل. قبل ما تأكد، بص على الصورة كويس: هل ده نفس الشخص؟ وهل المعدة ناقصة فعلًا، ولا مستخبية أو الزاوية مش واضحة؟ لو عندك أي شك، اختار «ليست مخالفة».'
+      : mode === 'reject'
+        ? 'الحدث هيتقفل كـ «ليست مخالفة» ومش هيتحسب على أي حد. ملاحظتك بتساعد في تحسين دقة النظام.'
+        : 'لو النظام نسب الحدث لشخص غلط أو ماعرفش الشخص، حدد العامل الصح. الحدث هيفضل بانتظار المراجعة لحد ما حد يأكده.';
+    var nameIn = h('input', { class: 'input', id: 'rvName', value: reviewerName(), placeholder: 'مثال: م. سامي — مشرف الوردية أ', autocomplete: 'name' });
+    var noteIn = h('textarea', { class: 'input', id: 'rvNote', rows: '3', style: { height: 'auto', minHeight: '78px', paddingBlock: '8px' }, placeholder: mode === 'confirm' ? 'مثال: الصورة واضحة، العامل واقف جنب الفرن من غير خوذة' : 'مثال: العامل لابس الخوذة بس الزاوية مخبياها' });
+    var wSel = h('select', { class: 'select', id: 'rvWorker' }, h('option', { value: '', text: '— اختار العامل —' }));
+    if (mode !== 'reject') API.get('workers', { limit: 1000 }).then(function (r) { r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id }); if (w.id === e.workerId) o.selected = true; wSel.appendChild(o); }); });
+    var err = h('div', { role: 'alert', style: { color: 'var(--red-hi, #e5534b)', fontSize: '13px' } });
+    var btn = h('button', { class: 'btn btn--sm' + (mode === 'confirm' ? ' btn--primary' : ''), type: 'button', text: title });
+    btn.addEventListener('click', function () {
+      var actor = nameIn.value.trim();
+      var body = { action: mode === 'confirm' ? 'confirm' : mode === 'reject' ? 'false_positive' : 'set_worker', actor: actor, note: noteIn.value.trim() };
+      if (mode !== 'reject') body.workerId = wSel.value || null;
+      if (actor) saveReviewer(actor);
+      btn.disabled = true; err.textContent = '';
+      API.post('events/' + e.id + '/action', body).then(function (d) {
+        closeModal(); done(d);
+        toast(mode === 'confirm' ? 'اتأكدت المخالفة' : mode === 'reject' ? 'اتسجّل إنها ليست مخالفة' : 'اتحدد العامل', (d.workerName ? d.workerName + ' · ' : '') + d.id);
+      }, function (x) { err.textContent = x.message; btn.disabled = false; });
+    });
+    openModal(title, h('div', { style: { display: 'grid', gap: '12px' } },
+      h('img', { src: evidenceSrc(e, 640), alt: 'دليل الحدث', style: { width: '100%', borderRadius: '10px' } }),
+      h('div', { class: 'muted', style: { fontSize: '13px', lineHeight: '1.8' }, text: hint }),
+      mode !== 'reject' ? h('label', { class: 'field' }, h('span', { text: 'العامل' }), wSel) : null,
+      h('label', { class: 'field' }, h('span', { text: 'اسم المشرف' + (mode === 'reject' ? ' (اختياري)' : '') }), nameIn),
+      mode !== 'worker' ? h('label', { class: 'field' }, h('span', { text: mode === 'confirm' ? 'إيه اللي شفته في الدليل؟' : 'ملاحظة (اختياري)' }), noteIn) : null,
+      err,
+      h('div', { style: { display: 'flex', gap: '8px' } }, btn, h('button', { class: 'btn btn--sm btn--ghost', type: 'button', text: 'إلغاء', onclick: closeModal }))));
   }
 
   /* ------------------------------------------------------------------ */
@@ -239,7 +287,7 @@
     NAV.forEach(function (g) {
       var grp = h('div', { class: 'nav-group' }, h('span', { text: g[0] + ' · ' + g[1] }));
       g[2].forEach(function (it) {
-        var b = h('button', { class: 'nav-item' + (S.route === it[0] ? ' is-active' : ''), type: 'button', 'data-route': it[0] }, icon(it[2]), h('span', { text: it[1] }), it[3] === 'LIVE' ? h('span', { class: 'nav-badge', text: 'LIVE' }) : it[3] === 'count' ? h('span', { class: 'nav-count', id: 'navCount', text: String(S.summary ? S.summary.activeViolations : '') }) : null);
+        var b = h('button', { class: 'nav-item' + (S.route === it[0] ? ' is-active' : ''), type: 'button', 'data-route': it[0] }, icon(it[2]), h('span', { text: it[1] }), it[3] === 'LIVE' ? h('span', { class: 'nav-badge', text: 'LIVE' }) : it[3] === 'count' ? h('span', { class: 'nav-count', id: 'navCount', title: 'بانتظار مراجعة المشرف', text: S.summary && S.summary.pendingReview ? String(S.summary.pendingReview) : '', hidden: !(S.summary && S.summary.pendingReview) }) : null);
         b.addEventListener('click', function () { location.hash = '#/' + it[0]; $('#app').classList.remove('nav-open'); });
         grp.appendChild(b);
       });
@@ -271,32 +319,42 @@
   function renderStatus(health) {
     var st = clear($('#status'));
     var cams = health ? health.cameras : null;
-    var mode = API.state.mode;
-    st.appendChild(h('span', null, h('span', { class: 'dot dot--on' }), 'NODE ', h('b', { text: mode === 'server' ? 'egic-core-01' : 'egic-edge-browser' })));
-    st.appendChild(h('span', null, 'MODE ', h('b', { text: 'MULTI-SITE · 9' })));
-    st.appendChild(h('span', null, 'CAMERAS ', h('b', { text: cams ? cams.online + '/' + cams.total : '—' })));
-    st.appendChild(h('span', null, 'ENGINE ', h('b', { class: 'ok', text: 'ONLINE' })));
-    st.appendChild(h('span', { class: 'hide-sm' }, 'BACKEND ', h('b', { class: mode === 'server' ? 'ok' : 'warn', text: mode === 'server' ? 'LIVE API · SSE' : 'EMBEDDED ENGINE' })));
+    var online = API.state.mode === 'server' ? API.state.connected !== false : true;
+    st.appendChild(h('span', null, h('span', { class: 'dot ' + (online ? 'dot--on' : 'dot--off') }), h('b', { class: online ? 'ok' : 'warn', text: online ? 'النظام متصل' : 'انقطع الاتصال بالسيرفر' })));
+    st.appendChild(h('span', null, 'الكاميرات ', h('b', { text: cams ? cams.online + ' / ' + cams.total : '—' })));
+    var pend = S.summary ? S.summary.pendingReview : null;
+    st.appendChild(h('span', null, 'بانتظار المراجعة ', h('b', { class: pend ? 'warn' : '', text: pend == null ? '—' : String(pend) })));
     st.appendChild(h('span', { class: 'spacer' }));
-    st.appendChild(h('span', { class: 'hide-sm' }, 'POWERED BY ', h('b', { text: 'DELMON & DEV SMART X' })));
-    st.appendChild(h('span', { id: 'clock' }, h('b', { text: fTime(Date.now()) }), ' CAIRO'));
+    st.appendChild(h('span', { id: 'clock' }, h('b', { text: fTime(Date.now()) }), ' القاهرة'));
   }
 
+  function setNavCount(n) { var c = $('#navCount'); if (c) { c.textContent = n ? String(n) : ''; c.hidden = !n; } }
   function setBell(n) { var c = $('#bellCount'); c.textContent = String(n); c.style.display = n ? '' : 'none'; }
 
   /* ------------------------------------------------------------------ */
   /* VIEW: Overview                                                       */
   /* ------------------------------------------------------------------ */
   register('overview', function (v) {
-    var site = S.site;
-    v.appendChild(viewHead('نظرة السلامة العامة', 'امتثال معدات الوقاية والأحداث لحظيًا عبر ' + (site === 'ALL' ? 'المواقع التسعة' : siteName(site)), [h('span', { class: 'updated', id: 'upd', text: 'UPDATED ' + fTime(Date.now()) })]));
+    var site = S.site, multi = S.meta.sites.length > 1;
+    v.appendChild(viewHead('نظرة السلامة العامة', 'امتثال معدات الوقاية والأحداث لحظيًا في ' + (site === 'ALL' ? 'كل المواقع' : siteName(site)), [h('span', { class: 'updated', id: 'upd', text: 'آخر تحديث ' + fTime(Date.now()) })]));
+    // the supervisor's job comes first: detections waiting for a human decision
+    var rq = card(null); rq.body.style.padding = '0';
+    var rqIn = h('div', { class: 'review-q' }); rq.body.appendChild(rqIn); v.appendChild(rq);
+    function renderQueue(s) {
+      clear(rqIn); rqIn.classList.toggle('has-items', s.pendingReview > 0);
+      rqIn.appendChild(h('div', { class: 'n', text: num(s.pendingReview, 0) }));
+      rqIn.appendChild(h('div', null,
+        h('b', { text: s.pendingReview ? 'كشف بانتظار مراجعتك' : 'مفيش كشوفات بانتظار المراجعة' }),
+        h('p', { text: s.pendingReview ? 'دي كشوفات من الكاميرات، لسه مش مخالفات. افتح الدليل، وأكّد المخالفة أو اختار «ليست مخالفة».' + (s.confirmedToday ? ' · اتأكد النهارده: ' + s.confirmedToday : '') : 'أي كشف جديد هيظهر هنا لحد ما مشرف يراجعه.' + (s.confirmedToday ? ' · مخالفات اتأكدت النهارده: ' + s.confirmedToday : '') })));
+      rqIn.appendChild(s.pendingReview ? h('a', { class: 'btn btn--accent', href: '#/events/review', text: 'ابدأ المراجعة' }) : h('span'));
+    }
     var hero = card(null, { cls: 'hero-kpi-card' });
     var heroIn = h('div', { class: 'hero-kpi' }); hero.body.style.padding = '0'; hero.body.appendChild(heroIn);
     v.appendChild(hero);
     var row2 = h('div', { class: 'grid g-4' }); v.appendChild(row2);
     var mid = h('div', { class: 'grid g-main' }); v.appendChild(mid);
     var trendCard = card('اتجاه الامتثال', { sub: 'آخر 24 ساعة · حسب عنصر الوقاية', actions: [seg([['24h', '24 س'], ['7d', '7 أيام'], ['30d', '30 يوم']], '24h', function (r) { drawTrend(r); })] });
-    var feedCard = card('المخالفات المباشرة', { actions: [h('span', { class: 'badge badge--critical', id: 'openBadge', text: '—' })] });
+    var feedCard = card('آخر الكشوفات والتنبيهات', { actions: [h('span', { class: 'badge badge--medium', id: 'openBadge', text: '—' })] });
     mid.appendChild(trendCard); mid.appendChild(feedCard);
     var feed = h('div', { class: 'feed', id: 'feed' }); feedCard.body.appendChild(feed);
     var row3 = h('div', { class: 'grid g-3' }); v.appendChild(row3);
@@ -306,6 +364,11 @@
     var hidden = {};
     function drawTrend(range) {
       API.get('trend', { site: site, range: range }).then(function (t) {
+        if (!t.points.some(function (p) { return p.index != null; })) {
+          if (trendHolder.__legend) trendHolder.__legend.remove();
+          clear(trendHolder).appendChild(h('div', { class: 'empty', style: { minHeight: '200px', display: 'grid', placeItems: 'center' }, text: 'نسبة الالتزام هتظهر هنا لما الكاميرات تبدأ تشوف عمال وتقيس معدات الوقاية.' }));
+          return;
+        }
         var xs = t.points.map(function (p) { return p.t; });
         var names = [['index', 'المؤشر الكلي'], ['helmet', 'الخوذة'], ['glasses', 'النظارة'], ['vest', 'السترة'], ['gloves', 'القفازات'], ['ears', 'سماعات الأذن']];
         var series = names.map(function (n, i) { return { name: n[1], values: t.points.map(function (p) { return n[0] === 'index' ? p.index : p.items[n[0]]; }), color: i === 5 ? 'var(--warning)' : C.seriesColor(i), hidden: hidden[i], width: i === 0 ? 2.5 : 1.6 }; });
@@ -317,23 +380,28 @@
 
     function renderSummary(s) {
       S.summary = s;
+      renderQueue(s);
       clear(heroIn);
+      var hasComp = s.compliance != null;
       var mainK = h('div', { class: 'kpi-main' },
-        h('div', { class: 'stat-l' }, 'PPE COMPLIANCE INDEX // ', h('span', { text: site === 'ALL' ? 'كل المواقع' : siteName(site) })),
-        h('div', { class: 'big' }, num(s.compliance, 1), h('small', { text: 'PERCENT COMPLIANT' })),
-        h('div', { id: 'meter', style: { marginTop: '18px' } }),
-        h('div', { class: 'stat-s', style: { marginTop: '10px' } }, 'الأمس في نفس الفترة ', h('span', { class: 'delta ' + (s.compliance >= s.compliancePrev ? 'up-good' : 'down-bad'), text: (s.compliance >= s.compliancePrev ? '▲ ' : '▼ ') + num(Math.abs(s.compliance - s.compliancePrev), 1) + ' نقطة' }), h('span', { class: 'tag-demo', text: 'DEMO DATA' })));
+        h('div', { class: 'stat-l' }, 'مؤشر الالتزام بمعدات الوقاية · ', h('span', { text: site === 'ALL' ? 'كل المواقع' : siteName(site) })),
+        h('div', { class: 'big' }, hasComp ? num(s.compliance, 1) : '—', h('small', { text: hasComp ? '٪ ملتزم' : 'لسه مفيش ملاحظات كفاية' })),
+        hasComp ? h('div', { id: 'meter', style: { marginTop: '18px' } }) : null,
+        hasComp && s.compliancePrev != null ? h('div', { class: 'stat-s', style: { marginTop: '10px' } }, 'مقارنة بالأسبوع اللي فات في نفس الوقت ', h('span', { class: 'delta ' + (s.compliance >= s.compliancePrev ? 'up-good' : 'down-bad'), text: (s.compliance >= s.compliancePrev ? '▲ ' : '▼ ') + num(Math.abs(s.compliance - s.compliancePrev), 1) + ' نقطة' }), s.demo ? h('span', { class: 'tag-demo', text: 'بيانات عرض' }) : null) : null);
       heroIn.appendChild(mainK);
-      C.meter($('#meter', mainK), { value: s.compliance, target: s.target, warn: 85 });
-      heroIn.appendChild(h('div', { class: 'kpi-stack' }, stat('في الموقع الآن', num(s.onSite, 0), 'الوردية ' + ({ A: 'أ', B: 'ب', C: 'ج' })[s.shift], { icon: 'workers' }), stat('مخالفات نشطة', num(s.activeViolations, 0), 'بانتظار إجراء', { icon: 'alert', critical: s.activeViolations > 0 })));
-      heroIn.appendChild(h('div', { class: 'kpi-stack' }, stat('مدة التعرض', num(s.exposureMin, 1), 'دقائق عدم امتثال · اليوم', { icon: 'posture', unit: 'د' }), stat('تسلل ومناطق محظورة', num(s.intrusionsToday, 0), 'اليوم', { icon: 'access' })));
+      if (hasComp) C.meter($('#meter', mainK), { value: s.compliance, target: s.target, warn: 85 });
+      heroIn.appendChild(h('div', { class: 'kpi-stack' }, stat('في العمل الآن', num(s.onSite, 0), 'الوردية ' + ({ A: 'أ', B: 'ب', C: 'ج' })[s.shift], { icon: 'workers' }), stat('بانتظار المراجعة', num(s.pendingReview, 0), 'كشوفات من الكاميرات — مش مخالفات لسه', { icon: 'alert' })));
+      heroIn.appendChild(h('div', { class: 'kpi-stack' }, stat('مخالفات مؤكدة النهارده', num(s.confirmedToday, 0), 'أكّدها مشرف من الدليل', { icon: 'check' }), stat('دخول مناطق محظورة', num(s.intrusionsToday, 0), 'النهارده', { icon: 'access' })));
       clear(row2);
-      [['أحداث حرجة (24س)', num(s.critical24, 0), 'تصعيد تلقائي', 'alert', s.critical24 > 0], ['مؤشر BBS', num(s.bbsScore, 1), 'صيغة قابلة للضبط مع HSE', 'bbs'], ['متوسط زمن الاستجابة', s.meanResponseSec != null ? Math.round(s.meanResponseSec / 60 * 10) / 10 + '' : '—', 'دقيقة حتى الاستلام · 7 أيام', 'rules'], ['مركبات داخل المواقع', num(s.vehiclesOnSite, 0), num(s.authorizedToday, 0) + ' دخول مصرح · ' + num(s.deniedToday, 0) + ' مرفوض اليوم', 'vehicles']].forEach(function (k) {
+      [['تنبيهات حرجة (24 س)', num(s.critical24, 0), 'حريق · سقوط · استغاثة', 'alert', s.critical24 > 0],
+        ['الكاميرات', s.cameras.total ? s.cameras.online + ' / ' + s.cameras.total : '—', 'شغالة / إجمالي', 'cameras'],
+        ['متوسط زمن الاستجابة', s.meanResponseSec != null ? Math.round(s.meanResponseSec / 60 * 10) / 10 + '' : '—', 'دقيقة لحد ما حد يستلم التنبيه · 7 أيام', 'rules'],
+        ['مركبات جوه المصنع', num(s.vehiclesOnSite, 0), num(s.authorizedToday, 0) + ' دخول مصرح · ' + num(s.deniedToday, 0) + ' مرفوض النهارده', 'vehicles']].forEach(function (k) {
         var c = card(null); c.body.style.padding = '0'; c.body.appendChild(stat(k[0], k[1], k[2], { icon: k[3], critical: k[4] })); row2.appendChild(c);
       });
-      var ob = $('#openBadge'); if (ob) ob.textContent = s.activeViolations + ' OPEN';
-      var nc = $('#navCount'); if (nc) nc.textContent = String(s.activeViolations);
-      var u = $('#upd'); if (u) u.textContent = 'UPDATED ' + fTime(Date.now());
+      var ob = $('#openBadge'); if (ob) ob.textContent = s.activeViolations + ' مفتوح';
+      setNavCount(s.pendingReview);
+      var u = $('#upd'); if (u) u.textContent = 'آخر تحديث ' + fTime(Date.now());
     }
     API.get('summary', { site: site }).then(renderSummary);
 
@@ -341,11 +409,11 @@
       var it = h('button', { type: 'button', class: 'feed-item' + (isNew ? ' is-new' : '') + (String(e.source).indexOf('live') === 0 ? ' is-live' : '') },
         h('img', { src: evidenceSrc(e, 240), alt: '', loading: 'lazy' }),
         h('div', null, h('div', { class: 'ft', text: e.typeAr }), h('div', { class: 'fs', text: (e.workerName ? e.workerName + ' · ' : '') + e.siteName + ' · ' + (e.zoneName || '').split(' — ')[0] }), h('div', { class: 'fs mono', text: e.cameraId || '' })),
-        h('div', { class: 'fm' }, h('span', { text: fTime(e.ts) }), sevBadge(e.sev), String(e.source).indexOf('live') === 0 ? h('span', { class: 'tag-real', text: 'LIVE' }) : null));
+        h('div', { class: 'fm' }, h('span', { text: fTime(e.ts) }), reviewBadge(e.review) || sevBadge(e.sev), String(e.source).indexOf('live') === 0 ? h('span', { class: 'tag-real', text: 'كاميرا حقيقية' }) : null));
       it.addEventListener('click', function () { openEvent(e); });
       return it;
     }
-    API.get('events', { site: site, status: 'ACTIVE', limit: 30 }).then(function (r) { clear(feed); if (!r.items.length) feed.appendChild(h('div', { class: 'empty', text: 'لا توجد مخالفات مفتوحة' })); r.items.forEach(function (e) { feed.appendChild(feedItem(e)); }); });
+    API.get('events', { site: site, status: 'ACTIVE', limit: 30 }).then(function (r) { clear(feed); if (!r.items.length) feed.appendChild(h('div', { class: 'empty', text: 'مفيش كشوفات أو تنبيهات مفتوحة' })); r.items.forEach(function (e) { feed.appendChild(feedItem(e)); }); });
     sub('event', function (e) {
       if (site !== 'ALL' && e.siteId !== site) return;
       var em = feed.querySelector('.empty'); if (em) em.remove();
@@ -359,6 +427,15 @@
     var heatCard = card('المخالفات / الساعة', { sub: '7 أيام × 24 ساعة (توقيت القاهرة)' }); row3.appendChild(heatCard);
     var repCard = card('تكرار المخالفات', { sub: '30 يومًا · للتوجيه لا للعقاب' }); row3.appendChild(repCard);
     API.get('zones', { site: site }).then(function (zs) {
+      var measured = zs.some(function (z) { return z.compliance != null; });
+      if (!zs.length) { zoneCard.body.appendChild(h('div', { class: 'empty', text: 'مفيش كشوفات في آخر 7 أيام.' })); return; }
+      if (!measured) {
+        // no measured compliance yet → show what is known: detections per zone (never an invented percentage)
+        $('.card-t', zoneCard).textContent = 'الكشوفات حسب المنطقة';
+        var maxE = zs.reduce(function (a, z) { return Math.max(a, z.events); }, 1);
+        C.bars(zoneCard.body, { horizontal: true, items: zs.slice(0, 7).map(function (z) { return { label: z.name.split(' — ')[0], value: z.events, extra: [{ label: 'حرجة', value: String(z.critical) }] }; }), max: maxE, format: function (v) { return String(Math.round(v)); }, valueLabel: 'كشوفات', color: 'var(--s1)', labelWidth: 150 });
+        return;
+      }
       var items = zs.slice(0, 7).map(function (z) { return { label: z.name, value: z.compliance, extra: [{ label: 'أحداث', value: String(z.events) }, { label: 'حرجة', value: String(z.critical) }] }; });
       C.bars(zoneCard.body, { horizontal: true, items: items, max: 100, format: function (v) { return v.toFixed(1) + '%'; }, valueLabel: 'امتثال', color: 'var(--s1)', labelWidth: 150 });
     });
@@ -369,7 +446,7 @@
       var list = h('div', { class: 'rank' });
       if (!w.items.length) list.appendChild(h('div', { class: 'empty' }, h('div', { text: 'لا يوجد موظفون مسجلون بعد.' }), h('a', { class: 'btn btn--xs', href: '#/workers', style: { marginTop: '8px' }, text: '+ إضافة موظف' })));
       w.items.slice(0, 6).forEach(function (x, i) {
-        var r = h('div', { class: 'rank-row', role: 'button', tabindex: '0' }, h('span', { class: 'n', text: pad2(i + 1) }), h('span', { class: 'av', text: initials(x.name) }), h('div', null, h('b', { text: x.name }), h('span', { text: x.id + ' · ' + x.dept + ' · امتثال ' + num(x.compliance, 1) + '%' })), h('span', { class: 'v', text: String(x.violations) }));
+        var r = h('div', { class: 'rank-row', role: 'button', tabindex: '0' }, h('span', { class: 'n', text: pad2(i + 1) }), h('span', { class: 'av', text: initials(x.name) }), h('div', null, h('b', { text: x.name }), h('span', { text: x.id + ' · ' + x.dept + (x.compliance != null ? ' · التزام ' + num(x.compliance, 1) + '%' : '') })), h('span', { class: 'v', title: 'مخالفات مؤكدة', text: String(x.violations) }));
         r.addEventListener('click', function () { navigate('#/workers/' + x.id); });
         list.appendChild(r);
       });
@@ -377,11 +454,13 @@
     });
 
     // site comparison + live wall teaser
-    var cmpCard = card('مقارنة المواقع التسعة', { sub: 'الامتثال (24 س) · اضغط على الموقع للتصفية' });
-    row4.appendChild(cmpCard);
-    API.get('sites/stats').then(function (ss) {
-      C.bars(cmpCard.body, { items: ss.map(function (x) { return { label: x.code, value: x.compliance, tipTitle: x.name + ' · ' + x.sub, id: x.id }; }), max: 100, height: 230, format: function (v) { return v.toFixed(1) + '%'; }, valueLabel: 'امتثال', showValues: true, onClick: function (it) { setSite(it.id); } });
-    });
+    if (multi) {
+      var cmpCard = card('مقارنة المواقع', { sub: 'الامتثال (24 س) · اضغط على الموقع للتصفية' });
+      row4.appendChild(cmpCard);
+      API.get('sites/stats').then(function (ss) {
+        C.bars(cmpCard.body, { items: ss.map(function (x) { return { label: x.code, value: x.compliance, tipTitle: x.name + ' · ' + x.sub, id: x.id }; }), max: 100, height: 230, format: function (v) { return v.toFixed(1) + '%'; }, valueLabel: 'امتثال', showValues: true, onClick: function (it) { setSite(it.id); } });
+      });
+    } else row4.className = 'grid';
     var attCard = card('الحضور اليوم', { sub: 'بالتعرف على الوجه · لحظيًا', icon: 'clock', actions: [h('a', { class: 'btn btn--xs', href: '#/attendance', text: 'فتح الحضور' })] });
     row4.appendChild(attCard);
     function drawAtt() {
@@ -402,7 +481,8 @@
   /* VIEW: Events log                                                     */
   /* ------------------------------------------------------------------ */
   register('events', function (v, openId) {
-    var q = { site: S.site, type: 'ALL', sev: 'ALL', status: 'ALL', source: 'ALL', q: '', limit: 25, offset: 0 };
+    var q = { site: S.site, type: 'ALL', sev: 'ALL', status: 'ALL', source: 'ALL', review: 'ALL', q: '', limit: 25, offset: 0 };
+    if (openId === 'review') { q.review = 'PENDING'; openId = null; }
     if (openId) {
       // deep link from the executive briefing (#/events/<id>); in embedded mode ids can differ per page, so fall back to the newest demo event
       API.get('events/' + encodeURIComponent(openId)).then(openEvent).catch(function () {
@@ -418,6 +498,7 @@
     fl.appendChild(h('label', { class: 'field' }, h('span', { text: 'النوع' }), select([['ALL', 'كل الأنواع']].concat(Object.keys(types).map(function (k) { return [k, types[k].ar]; })), 'ALL', function (x) { q.type = x; q.offset = 0; load(); })));
     fl.appendChild(h('label', { class: 'field' }, h('span', { text: 'الخطورة' }), select([['ALL', 'الكل'], ['CRITICAL', 'حرجة'], ['HIGH', 'عالية'], ['MEDIUM', 'متوسطة'], ['LOW', 'منخفضة']], 'ALL', function (x) { q.sev = x; q.offset = 0; load(); })));
     fl.appendChild(h('label', { class: 'field' }, h('span', { text: 'الحالة' }), select([['ALL', 'الكل'], ['ACTIVE', 'نشطة'], ['OPEN', 'مفتوح'], ['ASSIGNED', 'مُسند'], ['RESOLVED', 'تم الحل'], ['FALSE_POSITIVE', 'غير صحيح']], 'ALL', function (x) { q.status = x; q.offset = 0; load(); })));
+    fl.appendChild(h('label', { class: 'field' }, h('span', { text: 'المراجعة' }), select([['ALL', 'الكل'], ['PENDING', 'بانتظار المراجعة'], ['CONFIRMED', 'مخالفات مؤكدة'], ['REJECTED', 'ليست مخالفة']], q.review, function (x) { q.review = x; q.offset = 0; load(); })));
     fl.appendChild(h('label', { class: 'field' }, h('span', { text: 'المصدر' }), select([['ALL', 'الكل'], ['live', 'كشف حي حقيقي'], ['sim', 'محاكاة']], 'ALL', function (x) { q.source = x; q.offset = 0; load(); })));
     v.appendChild(fl);
     var tc = card(null, { flush: true }); v.appendChild(tc);
@@ -430,9 +511,9 @@
           { t: 'الحدث', f: function (e) { return h('div', null, h('div', { class: 'strong', text: e.typeAr }), h('div', { class: 'mono muted', style: { fontSize: '11px' }, text: e.id })); } },
           { t: 'الخطورة', f: function (e) { return sevBadge(e.sev); } },
           { t: 'الموقع / المنطقة', f: function (e) { return h('div', null, h('div', { text: e.siteName }), h('div', { class: 'muted', style: { fontSize: '11.5px' }, text: (e.zoneName || '').split(' — ')[0] })); } },
-          { t: 'العامل', f: function (e) { return e.workerName ? h('div', null, h('div', { text: e.workerName }), h('div', { class: 'mono muted', style: { fontSize: '11px' }, text: e.workerId })) : h('span', { class: 'muted', text: '—' }); } },
+          { t: 'العامل', f: function (e) { return e.workerName ? h('div', null, h('div', { text: e.workerName + (e.review === 'PENDING' ? ' ؟' : '') }), h('div', { class: 'mono muted', style: { fontSize: '11px' }, text: e.workerId })) : h('span', { class: 'muted', text: e.review ? 'غير محدد' : '—' }); } },
           { t: 'التوقيت', f: function (e) { return h('div', { class: 'mono', style: { fontSize: '12px' } }, h('div', { text: fTime(e.ts) }), h('div', { class: 'muted', text: fDate(e.ts) })); } },
-          { t: 'الحالة', f: function (e) { return statusBadge(e.status); } },
+          { t: 'الحالة', f: function (e) { return reviewBadge(e.review) || statusBadge(e.status); } },
           { t: 'المصدر', f: function (e) { return srcTag(e.source); } }
         ], r.items, { onRow: openEvent }));
         clear(pager);
@@ -443,14 +524,15 @@
     }
     function exportCsv() {
       API.get('events', Object.assign({}, q, { limit: 500, offset: 0 })).then(function (r) {
-        var rows = [['event_id', 'timestamp_cairo', 'type', 'type_ar', 'severity', 'status', 'site', 'zone', 'camera', 'worker_id', 'worker_name', 'confidence', 'source']];
-        r.items.forEach(function (e) { rows.push([e.id, fDate(e.ts) + ' ' + fTime(e.ts), e.type, e.typeAr, e.sev, e.status, e.siteName, e.zoneName, e.cameraId, e.workerId || '', e.workerName || '', e.conf, e.source]); });
+        var rows = [['event_id', 'timestamp_cairo', 'type', 'type_ar', 'severity', 'status', 'review', 'reviewer', 'review_note', 'site', 'zone', 'camera', 'worker_id', 'worker_name', 'confidence', 'source']];
+        r.items.forEach(function (e) { rows.push([e.id, fDate(e.ts) + ' ' + fTime(e.ts), e.type, e.typeAr, e.sev, e.status, e.review ? REVIEW[e.review][0] : 'تنبيه سلامة', e.reviewer || '', e.reviewNote || '', e.siteName, e.zoneName, e.cameraId, e.workerId || '', e.workerName || '', e.conf, e.source]); });
         downloadCsv('EGIC-events-' + fDate(Date.now()) + '.csv', rows);
         toast('تم تصدير الملف', r.items.length + ' حدث · CSV');
       });
     }
     load();
     sub('event', function () { if (q.offset === 0) load(); });
+    sub('event_update', function () { load(); });
   });
 
   function downloadCsv(name, rows) {
@@ -509,22 +591,23 @@
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             h('button', { class: 'btn btn--sm btn--accent', onclick: function () { window.EGICLive.enrollDialog(w.id, load); } }, icon('userplus'), enrolled ? 'إعادة تسجيل الوجه' : 'تسجيل الوجه'),
             h('button', { class: 'btn btn--sm', onclick: function () { editProfile(w, load); } }, 'تعديل البيانات'),
+            enrolled ? h('button', { class: 'btn btn--sm btn--ghost', onclick: function () { wipeFace(w, load); } }, 'مسح بصمة الوجه') : null,
             h('button', { class: 'btn btn--sm btn--ghost', onclick: function () { deleteWorker(w); } }, icon('trash'), 'حذف'))));
         holder.appendChild(head);
         if (!enrolled) holder.appendChild(h('div', { class: 'card', style: { padding: '12px 16px', borderColor: 'rgba(247,146,36,.5)', fontSize: '13px' } }, 'الموظف ده لسه ملوش بصمة وجه — ', h('b', { text: 'سجّل وجهه' }), ' عشان الكاميرات تتعرف عليه وتسجل حضوره وانصرافه تلقائيًا.'));
         holder.appendChild(attendanceCard(w));
         var ks = h('div', { class: 'grid g-4' });
         var live = w.events.filter(function (e) { return String(e.source).indexOf('live') === 0; });
-        [['نسبة الامتثال', w.obs ? num(w.compliance, 1) + '%' : '—', num(w.obs, 0) + ' ملاحظة متابعة', 'check'], ['إجمالي المخالفات', num(w.violations, 0), 'منها ' + live.length + ' لقطات حية', 'alert'], ['آخر ظهور', w.lastSeen ? ago(w.lastSeen) : '—', w.lastSeen ? fDT(w.lastSeen) : '', 'cameras'], ['أكثر مخالفة', topType(w.byType), 'حسب التكرار', 'bbs']].forEach(function (k) { var c = card(null); c.body.style.padding = '0'; c.body.appendChild(stat(k[0], k[1], k[2], { icon: k[3] })); ks.appendChild(c); });
+        [['نسبة الامتثال', w.obs ? num(w.compliance, 1) + '%' : '—', num(w.obs, 0) + ' ملاحظة متابعة', 'check'], ['مخالفات مؤكدة', num(w.violations, 0), (w.pending ? w.pending + ' بانتظار مراجعة المشرف · ' : '') + (w.rejected ? w.rejected + ' اترفضت' : 'المؤكدة بس بتتحسب'), 'alert'], ['آخر ظهور', w.lastSeen ? ago(w.lastSeen) : '—', w.lastSeen ? fDT(w.lastSeen) : '', 'cameras'], ['أكثر مخالفة', topType(w.byType), 'حسب التكرار', 'bbs']].forEach(function (k) { var c = card(null); c.body.style.padding = '0'; c.body.appendChild(stat(k[0], k[1], k[2], { icon: k[3] })); ks.appendChild(c); });
         holder.appendChild(ks);
-        var tl = card('سجل مخالفات السلامة والأدلة', { sub: 'اللقطات الحية تُسجل تلقائيًا من الكاميرا بعلامة مائية للمنصة' });
+        var tl = card('سجل الأحداث والأدلة', { sub: 'أي كشف بيفضل «بانتظار المراجعة» لحد ما مشرف يأكده. المخالفات المؤكدة بس هي اللي بتتحسب على الموظف.' });
         var list = h('div', { class: 'timeline' });
         if (!w.events.length) list.appendChild(h('div', { class: 'empty' }, h('div', { text: 'لا توجد مخالفات مسجلة في هذا الملف.' })));
         groupIncidents(w.events).forEach(function (g) {
           var e = g[0], img = evidenceSrc(e, 400);
           var item = h('div', { class: 'tl-item' + (String(e.source).indexOf('live') === 0 ? ' is-live' : '') },
             h('img', { src: img, alt: 'دليل', onclick: function () { imageModal(img, g.map(function (x) { return x.typeAr; }).join(' + ') + ' · ' + fDT(e.ts)); } }),
-            h('div', null, h('div', { class: 'ttl', text: g.map(function (x) { return x.typeAr; }).join(' + ') }), h('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '4px' }, text: e.siteName + ' · ' + (e.zoneName || '') + ' · ' + (e.cameraId || '') }), h('div', { class: 'chips' }, g.map(function (x) { return sevBadge(x.sev); }), statusBadge(e.status), srcTag(e.source))),
+            h('div', null, h('div', { class: 'ttl', text: g.map(function (x) { return x.typeAr; }).join(' + ') }), h('div', { class: 'muted', style: { fontSize: '12.5px', marginTop: '4px' }, text: e.siteName + ' · ' + (e.zoneName || '') + ' · ' + (e.cameraId || '') }), h('div', { class: 'chips' }, g.map(function (x) { return sevBadge(x.sev); }), reviewBadge(e.review) || statusBadge(e.status), srcTag(e.source))),
             h('div', { class: 'mono', style: { textAlign: 'end', fontSize: '12px' } }, h('div', { text: fTime(e.ts) }), h('div', { class: 'muted', text: fDate(e.ts) }), h('button', { class: 'btn btn--xs', style: { marginTop: '8px' }, text: 'التفاصيل', onclick: function () { openEvent(e); } })));
           list.appendChild(item);
         });
@@ -534,9 +617,23 @@
     }
     load();
     sub('event', function (e) { if (e.workerId === id) load(); });
+    sub('event_update', function () { load(); });
     sub('worker', function (w) { if (w.id === id) { if (w.deleted) navigate('#/workers'); else load(); } });
     sub('attendance', function (a) { if (a.record && a.record.workerId === id) load(); });
   }
+  // wiping a face print lives here, on the employee's own file, behind an explicit confirmation — never next to «capture»
+  function wipeFace(w, done) {
+    var yes = h('button', { class: 'btn btn--sm', type: 'button', style: { borderColor: 'var(--critical)', color: 'var(--critical)' }, text: 'أيوه، امسح بصمة ' + w.name });
+    yes.addEventListener('click', function () {
+      yes.disabled = true;
+      API.post('faces', { workerId: w.id, descriptors: [], mode: 'replace' }).then(function () { closeModal(); toast('اتمسحت بصمة الوجه', w.name + ' — لازم تتسجل تاني عشان الكاميرات تعرفه'); if (done) done(); });
+    });
+    openModal('مسح بصمة الوجه', h('div', { style: { display: 'grid', gap: '12px', lineHeight: '1.8' } },
+      h('div', null, 'بعد المسح، ', h('b', { text: 'الكاميرات مش هتعرف ' + w.name }), ' ولا هتسجل حضوره، لحد ما وشه يتسجل تاني.'),
+      h('div', { class: 'muted', style: { fontSize: '12.5px' }, text: 'امسح بس لو البصمة اتسجلت غلط (شخص تاني وقف مكانه مثلًا).' }),
+      h('div', { style: { display: 'flex', gap: '8px' } }, yes, h('button', { class: 'btn btn--sm btn--primary', type: 'button', text: 'لأ، رجوع', onclick: closeModal }))));
+  }
+
   /* shift labels from the attendance settings */
   function shiftName(k) { var sh = S.meta && S.meta.shifts && S.meta.shifts[k]; return sh ? sh.name : 'الوردية ' + (({ A: 'أ', B: 'ب', C: 'ج' })[k] || k || '—'); }
   function shiftHours(k) { var sh = S.meta && S.meta.shifts && S.meta.shifts[k]; return sh ? '⁦' + sh.start + '–' + sh.end + '⁩' : ''; } // LTR isolate: keeps 06:00–14:00 in order inside Arabic text
@@ -616,10 +713,13 @@
     var shiftSel = select(Object.keys(S.meta.shifts).map(function (k) { return [k, shiftName(k) + ' (' + shiftHours(k) + ')']; }), w.shift || 'A', function () { });
     var siteSel = select(S.meta.sites.map(function (s) { return [s.id, s.name]; }), w.siteId, function () { });
     var msg = h('div', { style: { fontSize: '12.5px', color: '#ff9b9b', minHeight: '16px' } });
-    var enrollAfter = h('input', { type: 'checkbox', checked: true });
+    var enrollAfter = h('input', { type: 'checkbox' });
     function save() {
       var nm = name.value.trim(), id = code.value.trim();
       if (!nm) { msg.textContent = 'اكتب اسم الموظف.'; return; }
+      // a real name: at least two letters that aren't all the same one (blocks test entries like «يييييي»)
+      var letters = nm.replace(/[^\p{L}]/gu, '');
+      if (letters.length < 2 || /^(.)\1*$/u.test(letters)) { msg.textContent = 'اكتب اسم الموظف الحقيقي (الاسم ده شكله تجربة).'; return; }
       if (isNew && id && !/^[A-Za-z0-9_-]{1,32}$/.test(id)) { msg.textContent = 'الكود حروف إنجليزي وأرقام و - فقط.'; return; }
       var check = isNew && id ? API.get('workers/' + encodeURIComponent(id)).then(function () { throw new Error('الكود ' + id + ' مستخدم لموظف تاني'); }, function () { }) : Promise.resolve();
       check.then(function () {
@@ -635,7 +735,9 @@
       h('div', { class: 'grid g-2', style: { gap: '10px' } }, h('label', { class: 'field' }, h('span', { text: 'القسم' }), dept), h('label', { class: 'field' }, h('span', { text: 'الوظيفة' }), role)),
       h('div', { class: 'grid g-2', style: { gap: '10px' } }, h('label', { class: 'field' }, h('span', { text: 'الموبايل' }), phone), h('label', { class: 'field' }, h('span', { text: 'الوردية' }), shiftSel)),
       h('label', { class: 'field' }, h('span', { text: 'الموقع' }), siteSel),
-      isNew ? h('label', { class: 'switch' }, enrollAfter, 'سجّل بصمة الوجه بعد الحفظ مباشرة') : null,
+      isNew ? h('div', { style: { display: 'grid', gap: '4px' } },
+        h('label', { class: 'switch' }, enrollAfter, 'افتح تسجيل الوجه بعد الحفظ مباشرة'),
+        h('div', { style: { fontSize: '11.5px', color: 'var(--muted, #8aa)', lineHeight: '1.7' } }, 'سيبها فاضية عشان تضيف الموظف بس — تقدر تسجّل الوجه بعدين من ملف الموظف ومن الكاميرا الشغالة في اللاب.')) : null,
       msg,
       h('div', { style: { display: 'flex', gap: '8px' } }, h('button', { class: 'btn btn--primary', text: isNew ? 'إضافة الموظف' : 'حفظ', onclick: save }), h('button', { class: 'btn', text: 'إلغاء', onclick: closeModal })));
     openModal(isNew ? 'إضافة موظف جديد' : 'تعديل ملف الموظف · ' + w.id, body);
@@ -740,23 +842,25 @@
     SOS_GESTURE: { ic: '🆘', title: 'إشارة استغاثة', en: 'SOS GESTURE', amber: false, siren: 'fire' }
   };
   var EGICAlarm = (function () {
-    var ctx = null, timer = null, stopAt = 0, shown = {}, current = null, pill = null;
+    var ctx = null, timer = null, stopAt = 0, shown = {}, current = null;
     function audio() { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) { ctx = null; } return ctx; }
     function armed() { return !!(ctx && ctx.state === 'running'); }
     // Browsers block sound until a user gesture; on an unattended screen the siren would be SILENT.
-    // Keep trying on every interaction (not once), and show an unmissable pill until audio is actually running.
+    // Keep trying on every interaction (not once); a header button stays visible until audio is actually running.
     ['pointerdown', 'keydown', 'touchstart'].forEach(function (t) { document.addEventListener(t, function () { audio(); updatePill(); }, { passive: true }); });
     document.addEventListener('visibilitychange', function () { if (!document.hidden) { audio(); updatePill(); } });
     function unlock() { audio(); try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { } updatePill(); }
+    var wired = false;
     function updatePill() {
-      if (!armed() && !pill && document.body) {
-        pill = h('button', { type: 'button', title: 'المتصفح بيمنع صوت الإنذار لحد ما تضغط مرة', style: { position: 'fixed', zIndex: '99999', insetInlineEnd: '16px', bottom: '16px', background: '#e5484d', color: '#fff', border: 'none', borderRadius: '999px', padding: '11px 18px', fontWeight: '700', fontSize: '13px', boxShadow: '0 6px 22px rgba(0,0,0,.45)', cursor: 'pointer' } }, '🔊 فعّل صوت الإنذار');
-        pill.addEventListener('click', function () {
+      var btn = document.getElementById('soundBtn'); if (!btn) return;
+      if (!wired) {
+        wired = true;
+        btn.addEventListener('click', function () {
           audio(); if (ctx && ctx.state !== 'running') try { ctx.resume(); } catch (e) { }
           setTimeout(function () { try { var t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = 880; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3); o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.31); } catch (e) { } try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { } updatePill(); }, 60);
         });
-        document.body.appendChild(pill);
-      } else if (armed() && pill) { pill.remove(); pill = null; }
+      }
+      btn.hidden = armed();
     }
     setInterval(updatePill, 3000); setTimeout(function () { audio(); updatePill(); }, 800);
     function tone(f0, f1, t, dur, type, vol) {
@@ -852,15 +956,24 @@
     API.init().then(function (mode) {
       return Promise.all([API.get('meta'), API.get('cameras'), API.get('system')]).then(function (r) {
         S.meta = r[0]; S.cams = {}; r[1].items.forEach(function (c) { S.cams[c.id] = c; });
-        var ss = $('#siteSel'); clear(ss); ss.appendChild(h('option', { value: 'ALL', text: 'كل المواقع (9)' }));
+        var ss = $('#siteSel'); clear(ss);
+        if (S.meta.sites.length > 1) ss.appendChild(h('option', { value: 'ALL', text: 'كل المواقع (' + S.meta.sites.length + ')' }));
         S.meta.sites.forEach(function (s) { ss.appendChild(h('option', { value: s.id, text: s.name + ' · ' + s.sub })); });
+        if (S.meta.sites.length === 1) { S.site = S.meta.sites[0].id; ss.disabled = true; }
         ss.addEventListener('change', function () { setSite(ss.value); });
+        $('#ribbon').hidden = !S.meta.demo;
+        $('#demoBtn').hidden = !S.meta.demo;
+        API.get('summary', { site: S.site }).then(function (sm) { S.summary = sm; setNavCount(sm.pendingReview); renderStatus(r[2]); });
         renderStatus(r[2]);
-        API.on('health', function (hs) { renderStatus(hs); });
-        setInterval(function () { var c = $('#clock'); if (c) { clear(c); c.appendChild(h('b', { text: fTime(Date.now()) })); c.appendChild(document.createTextNode(' CAIRO')); } }, 1000);
+        API.on('health', function (hs) { S.health = hs; renderStatus(hs); });
+        S.health = r[2];
+        var kpiT = 0;
+        function refreshCounts() { clearTimeout(kpiT); kpiT = setTimeout(function () { API.get('summary', { site: S.site }).then(function (sm) { S.summary = sm; setNavCount(sm.pendingReview); renderStatus(S.health); }); }, 400); }
+        API.on('kpi', refreshCounts); API.on('event_update', refreshCounts);
+        setInterval(function () { var c = $('#clock'); if (c) { clear(c); c.appendChild(h('b', { text: fTime(Date.now()) })); c.appendChild(document.createTextNode(' القاهرة')); } }, 1000);
         API.on('event', function (e) {
           if (e.sev === 'CRITICAL' || String(e.source).indexOf('live') === 0) { S.unread++; setBell(S.unread); }
-          if (String(e.source).indexOf('live') === 0 && S.route !== 'live') toast('كشف حي: ' + e.typeAr, (e.workerName || 'غير محدد') + ' · ' + e.cameraId, { kind: 'live', img: evidenceSrc(e, 200), action: ['عرض', function () { openEvent(e); }] });
+          if (String(e.source).indexOf('live') === 0 && S.route !== 'live') toast((e.review === 'PENDING' ? 'كشف بانتظار المراجعة: ' : 'تنبيه: ') + e.typeAr, (e.workerName || 'عامل غير محدد') + ' · ' + (e.cameraName || e.cameraId), { kind: 'live', img: evidenceSrc(e, 200), action: [e.review === 'PENDING' ? 'مراجعة' : 'عرض', function () { openEvent(e); }] });
           else if (e.sev === 'CRITICAL' && S.route !== 'live') toast(e.typeAr, e.siteName + ' · ' + (e.zoneName || '').split(' — ')[0], { kind: 'critical', img: evidenceSrc(e, 200), action: ['عرض', function () { openEvent(e); }] });
           if (HZ[e.type]) EGICAlarm.show(e);
           if (e.type === 'SOS_GESTURE') { $('#sosImg').src = evidenceSrc(e, 240); $('#sosSub').textContent = e.siteName + ' · ' + e.zoneName + ' · ' + fTime(e.ts) + (e.workerName ? ' · ' + e.workerName : ''); $('#sos').classList.add('is-on'); setTimeout(function () { $('#sos').classList.remove('is-on'); }, 15000); }
