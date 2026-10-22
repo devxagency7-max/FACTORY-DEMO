@@ -377,7 +377,7 @@
     this.tracks = []; this.nextId = 1;
     // MISSING needs ≥ minKnown clear looks and ≥ 70 % of them missing; then it must last persistMs before anything is reported.
     // Tracks survive short occlusions (maxAgeMs) so a person walking behind a machine keeps their identity.
-    this.opts = Object.assign({ window: 15, missingRatio: 0.7, minKnown: 6, persistMs: 5000, cooldownMs: 25000, maxAgeMs: 3000, required: ['helmet', 'glasses', 'vest'] }, opts || {});
+    this.opts = Object.assign({ window: 15, missingRatio: 0.7, minKnown: 6, persistMs: 5000, cooldownMs: 25000, maxAgeMs: 3000, idTtlMs: 10000, required: ['helmet', 'glasses', 'vest'] }, opts || {});
   }
   Tracker.prototype.update = function (people, now) {
     var self = this, o = this.opts;
@@ -385,9 +385,12 @@
     people.forEach(function (p) {
       var best = null, bi = 0.2;
       self.tracks.forEach(function (t) { if (used[t.id]) return; var v = iou(t.box, p.box); if (v > bi) { bi = v; best = t; } });
-      if (!best) { best = { id: self.nextId++, hist: {}, since: {}, lastViolation: {}, identity: null, idVotes: {}, born: now }; self.tracks.push(best); }
+      if (!best) { best = { id: self.nextId++, hist: {}, since: {}, lastViolation: {}, identity: null, idLog: [], idAt: 0, born: now }; self.tracks.push(best); }
       used[best.id] = true;
       best.box = p.box; best.head = p.head; best.face = p.face; best.items = p.items; best.seen = now;
+      // drop a name that hasn't been re-confirmed by a face for a while — so a track reused by another worker, or a
+      // person who left and someone else took their spot, doesn't keep showing the old name
+      if (best.identity && best.idAt && now - best.idAt > o.idTtlMs) best.identity = null;
       o.required.forEach(function (k) {
         var h = best.hist[k] = best.hist[k] || [];
         var st = p.items[k] ? p.items[k].state : 'UNKNOWN';
@@ -413,20 +416,25 @@
     });
     return out;
   };
+  Tracker.ID_WINDOW_MS = 4000; // only face looks from the last ~4s decide a person's identity
   Tracker.prototype.assignIdentity = function (faceBox, identity, score) {
     var c = center(faceBox), best = null;
     this.tracks.forEach(function (t) { if (inside(c, expand(t.box, 0.05, 0.1, 0.05, 0))) best = best && (best.box.x2 - best.box.x1) < (t.box.x2 - t.box.x1) ? best : t; });
     if (!best) return null;
-    best.idVotes[identity] = (best.idVotes[identity] || 0) + (score || 1);
-    best.idCount = best.idCount || {}; best.idCount[identity] = (best.idCount[identity] || 0) + 1;
-    best.idBest = best.idBest || {}; best.idBest[identity] = Math.max(best.idBest[identity] || 0, score || 0); // strongest single look per identity
+    // Windowed voting: a name is decided ONLY by the looks of the last few seconds, not by a lifetime tally. This way a
+    // stale name expires on its own, and a track reused by another worker re-identifies instead of inheriting the old name.
+    var now = Date.now(), win = Tracker.ID_WINDOW_MS;
+    best.idLog = (best.idLog || []).filter(function (e) { return now - e.t < win; });
+    best.idLog.push({ id: identity, s: score || 0, t: now });
+    var cnt = {}, sum = {};
+    best.idLog.forEach(function (e) { cnt[e.id] = (cnt[e.id] || 0) + 1; sum[e.id] = (sum[e.id] || 0) + e.s; });
     var top = null, tv = 0, sec = 0;
-    Object.keys(best.idVotes).forEach(function (k) { var v = best.idVotes[k]; if (v > tv) { sec = tv; tv = v; top = k; } else if (v > sec) sec = v; });
-    // an identity sticks with a clear lead over any other face match on this person AND either two matching looks
-    // OR one confident look (dist <= 0.44, i.e. score >= 0.56) — same confidence attendance already trusts, so a
-    // violation lands on the right worker at once instead of "unidentified", without ever guessing between people
-    var sure = top && top !== '__unknown__' && (best.idBest[top] || 0) >= 0.56;
-    best.identity = top && top !== '__unknown__' && (best.idCount[top] >= 2 || sure) && tv >= sec * 1.5 ? top : null;
+    Object.keys(sum).forEach(function (k) { var v = sum[k]; if (v > tv) { sec = tv; tv = v; top = k; } else if (v > sec) sec = v; });
+    // a name sticks only with ≥2 recent looks AND a clear lead over any other match on this same person; otherwise unknown.
+    // With 30 workers a wrong name is worse than no name, so anything short of that leaves the person "unidentified".
+    if (top && top !== '__unknown__' && cnt[top] >= 2 && tv >= sec * 1.5) { best.identity = top; best.idAt = now; }
+    else if (top === '__unknown__' && cnt['__unknown__'] >= 2 && tv >= sec * 1.5) { best.identity = null; } // clearly someone else / unenrolled now
+    // else: brief ambiguity — keep the current name until it ages out (see update()'s TTL)
     return best;
   };
 

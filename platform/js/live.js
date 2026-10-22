@@ -472,7 +472,9 @@
           return faceDescFromCrop(src, out[i].box).then(function (desc) {
             if (!desc) return;
             var mm = AI.matchFaces([desc], g)[0];
-            if (mm && mm.label !== 'unknown' && mm.dist < out[i].dist) { out[i].label = mm.label; out[i].dist = mm.dist; out[i].second = mm.second; out[i].refined = true; }
+            // only trust the zoomed re-read when it is CONFIDENT (<= sureDist) and better — never let an upscaled blurry
+            // face manufacture a weak name; a borderline result stays "unknown"
+            if (mm && mm.label !== 'unknown' && mm.dist <= sure && mm.dist < out[i].dist) { out[i].label = mm.label; out[i].dist = mm.dist; out[i].second = mm.second; out[i].refined = true; }
           });
         });
       }, Promise.resolve()).then(function () { return out; });
