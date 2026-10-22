@@ -122,7 +122,12 @@ function createReader(url, opts) {
     const isRtsp = /^rtsps?:/i.test(url);
     const args = ['-hide_banner', '-loglevel', 'error', '-fflags', 'nobuffer', '-flags', 'low_delay'];
     if (isRtsp) args.push('-rtsp_transport', transport);
-    args.push('-i', url, '-an', '-vf', 'fps=' + fps + ",scale='min(" + width + ",iw)':-2", '-q:v', '6', '-f', 'mjpeg', 'pipe:1');
+    // optional image enhancement before scaling — denoise + exposure/contrast + sharpen, so the picture (and the AI) see a cleaner image
+    var vf = 'fps=' + fps + ",scale='min(" + width + ",iw)':-2";
+    // model-friendly default: denoise + mild exposure/contrast only. Heavy sharpen/saturation pushes the image off the model's
+    // training distribution and MEASURABLY lowers detection count + confidence, so it is deliberately avoided. Best for dark/noisy scenes.
+    if (opts.enhance) vf += ',' + (typeof opts.enhance === 'string' ? opts.enhance : 'hqdn3d=2:1.5:3:3,eq=contrast=1.12:brightness=0.04:gamma=1.04');
+    args.push('-i', url, '-an', '-vf', vf, '-q:v', '3', '-f', 'mjpeg', 'pipe:1');
     let proc, stderr = '';
     try { proc = spawn(opts.ffmpeg || 'ffmpeg', args, { windowsHide: true }); } catch (e) { return fail(e.code || e.message); }
     r.proc = proc;

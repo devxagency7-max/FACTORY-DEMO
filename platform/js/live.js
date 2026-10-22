@@ -227,6 +227,7 @@
     var urlIn = h('input', { class: 'input mono', dir: 'ltr', placeholder: 'rtsp://user:pass@192.168.1.64:554/…', style: { fontSize: '12px' } });
     var siteSel = U.select(S.meta.sites.map(function (s) { return [s.id, s.name]; }), 'PLT-01', function () { });
     var viaSel = h('select', { class: 'select' }, h('option', { value: '', text: 'مباشر من السيرفر' }));
+    var enhanceChk = h('input', { type: 'checkbox' });
     var agentsBox = h('div', { style: { display: 'grid', gap: '8px' } }), setupBox = h('div');
     var serverUrl = (API.state.base || location.origin).replace(/\/$/, '');
     var cloud = !/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
@@ -248,7 +249,7 @@
               c.error ? h('div', { style: { fontSize: '11.5px', color: '#ff9b9b' }, text: c.error }) : null),
             h('div', { style: { display: 'flex', gap: '6px' } },
               onPick ? h('button', { class: 'btn btn--xs btn--accent', text: 'تشغيل', onclick: function () { U.closeModal(); onPick({ kind: 'ipcam', id: c.id, name: c.name, webrtc: !!c.webrtc, url: API.state.base + '/api/v1/ipcams/' + c.id + '/mjpeg' }); } }) : null,
-              h('button', { class: 'btn btn--xs', text: 'تعديل', onclick: function () { editId = c.id; name.value = c.name; urlIn.value = c.url; siteSel.value = c.siteId || 'PLT-01'; viaSel.value = c.agentId || ''; saveBtn.textContent = 'حفظ التعديل'; msg.textContent = 'كلمة المرور المخفية (****) هتفضل زي ما هي لو مغيرتهاش.'; } }),
+              h('button', { class: 'btn btn--xs', text: 'تعديل', onclick: function () { editId = c.id; name.value = c.name; urlIn.value = c.url; siteSel.value = c.siteId || 'PLT-01'; viaSel.value = c.agentId || ''; enhanceChk.checked = !!c.enhance; saveBtn.textContent = 'حفظ التعديل'; msg.textContent = 'كلمة المرور المخفية (****) هتفضل زي ما هي لو مغيرتهاش.'; } }),
               h('button', { class: 'btn btn--xs btn--danger', text: 'حذف', onclick: function () { if (!window.confirm('حذف الكاميرا «' + c.name + '»؟')) return; adminPost('ipcams/' + c.id + '/delete').then(load).catch(function (e) { msg.textContent = 'تعذر الحذف: ' + e.message; }); } }))));
         });
       }).catch(function (e) { clear(list).appendChild(h('div', { class: 'muted', text: 'تعذر تحميل الكاميرات: ' + e.message })); });
@@ -292,8 +293,8 @@
     });
     saveBtn.addEventListener('click', function () {
       saveBtn.disabled = true;
-      adminPost('ipcams', { id: editId, name: name.value.trim(), url: urlIn.value.trim(), siteId: siteSel.value, agentId: viaSel.value || null }).then(function (c) {
-        U.toast('تم حفظ الكاميرا', c.name); editId = null; name.value = ''; urlIn.value = ''; preview.style.display = 'none'; saveBtn.textContent = 'حفظ الكاميرا'; msg.textContent = ''; load();
+      adminPost('ipcams', { id: editId, name: name.value.trim(), url: urlIn.value.trim(), siteId: siteSel.value, agentId: viaSel.value || null, enhance: enhanceChk.checked }).then(function (c) {
+        U.toast('تم حفظ الكاميرا', c.name + (enhanceChk.checked ? ' · تحسين الصورة مفعّل' : '')); editId = null; name.value = ''; urlIn.value = ''; enhanceChk.checked = false; preview.style.display = 'none'; saveBtn.textContent = 'حفظ الكاميرا'; msg.textContent = ''; load();
         API.get('cameras').then(function (r) { r.items.forEach(function (x) { S.cams[x.id] = x; }); });
       }).catch(function (e) { msg.textContent = '✗ ' + e.message; }).then(function () { saveBtn.disabled = false; });
     });
@@ -308,6 +309,7 @@
         h('div', { class: 'grid g-2', style: { gap: '10px' } }, h('label', { class: 'field' }, h('span', { text: 'اسم الكاميرا' }), name), h('label', { class: 'field' }, h('span', { text: 'الموقع' }), siteSel)),
         h('label', { class: 'field' }, h('span', { text: 'رابط البث (زي ما هو على شبكة المصنع)' }), urlIn),
         h('label', { class: 'field' }, h('span', { text: 'طريقة الاتصال' }), viaSel),
+        h('label', { class: 'switch', title: 'تنقية ضوضاء + سطوع/تباين + توضيح على السيرفر — صورة أنضف للعرض وللموديل (أثقل شوية على السيرفر)' }, enhanceChk, '✨ تحسين الصورة (تنقية + توضيح + سطوع)'),
         h('div', null, h('div', { class: 'muted', style: { fontSize: '11.5px', marginBottom: '6px' }, text: 'أمثلة (اضغط لتعبئة الشكل ثم عدّل الـ IP وكلمة المرور) — لو كلمة المرور فيها @ أو : اكتبها %40 أو %3A:' }), examples),
         h('div', { class: 'row', style: { display: 'flex', gap: '8px' } }, testBtn, saveBtn), msg, preview)));
     load();
