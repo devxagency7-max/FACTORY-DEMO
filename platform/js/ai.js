@@ -419,10 +419,14 @@
     if (!best) return null;
     best.idVotes[identity] = (best.idVotes[identity] || 0) + (score || 1);
     best.idCount = best.idCount || {}; best.idCount[identity] = (best.idCount[identity] || 0) + 1;
+    best.idBest = best.idBest || {}; best.idBest[identity] = Math.max(best.idBest[identity] || 0, score || 0); // strongest single look per identity
     var top = null, tv = 0, sec = 0;
     Object.keys(best.idVotes).forEach(function (k) { var v = best.idVotes[k]; if (v > tv) { sec = tv; tv = v; top = k; } else if (v > sec) sec = v; });
-    // an identity needs at least two matching looks and a clear lead over any other face match on the same person
-    best.identity = top && top !== '__unknown__' && best.idCount[top] >= 2 && tv >= sec * 1.5 ? top : null;
+    // an identity sticks with a clear lead over any other face match on this person AND either two matching looks
+    // OR one confident look (dist <= 0.44, i.e. score >= 0.56) — same confidence attendance already trusts, so a
+    // violation lands on the right worker at once instead of "unidentified", without ever guessing between people
+    var sure = top && top !== '__unknown__' && (best.idBest[top] || 0) >= 0.56;
+    best.identity = top && top !== '__unknown__' && (best.idCount[top] >= 2 || sure) && tv >= sec * 1.5 ? top : null;
     return best;
   };
 
