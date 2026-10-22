@@ -461,7 +461,9 @@
     faces.forEach(function (f) {
       if (f.label === 'unknown') return;
       var v = self.votes[f.label] = (self.votes[f.label] || []).filter(function (t) { return now - t < 3000; }); v.push(now);
-      if (v.length < 2 || (self.sent[f.label] && now - self.sent[f.label] < 60000)) return;
+      // a confident match counts on its own (so attendance still fires while PPE is hogging the GPU); a weaker one needs 2 within 3 s
+      var strong = f.dist <= 0.42;
+      if ((!strong && v.length < 2) || (self.sent[f.label] && now - self.sent[f.label] < 60000)) return;
       self.sent[f.label] = now;
       var img = null; try { img = faceCrop(src, f.box, 192); } catch (e) { }
       API.post('attendance/sighting', { workerId: f.label, cameraId: self.cameraIdFn(), conf: Math.round((1 - f.dist) * 100) / 100, image: img }).then(function (r) { if (self.onSeen) self.onSeen(r, f, img); }).catch(function () { });
@@ -1129,7 +1131,7 @@
       detectFaces(fsrc, fsize, { tiles: (st.inferEMA || 0) < 120 }).then(function (faces) {
         st.faces = faces; st.facesT = Date.now();
         // only trust a face big enough to be reliable for identity — tiny far faces cause wrong matches
-        var minH = Math.max(40, d.h * 0.035);
+        var minH = Math.max(30, d.h * 0.03);
         var good = faces.filter(function (f) { return (f.box.y2 - f.box.y1) >= minH; });
         // each recognised face is assigned to its OWN person track, so several employees are identified at once
         if (st.tracker) good.forEach(function (f) { st.tracker.assignIdentity(f.box, f.label === 'unknown' ? '__unknown__' : f.label, 1 - f.dist); });
