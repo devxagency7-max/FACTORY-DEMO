@@ -489,19 +489,21 @@
     var nose = kp(p, 0), ls = kp(p, 5), rs = kp(p, 6), lw = kp(p, 9), rw = kp(p, 10), le = kp(p, 7), re = kp(p, 8), lh = kp(p, 11), rh = kp(p, 12), lk = kp(p, 13), rk = kp(p, 14);
     var sho = mid(ls, rs), hip = mid(lh, rh);
     var res = { sos: false, handsUp: 0, fall: false, trunkAngle: null, ergo: null, ergoLevel: null, notes: [] };
-    // SOS: both wrists clearly above the head line
-    var headY = nose ? nose.y : sho ? sho.y - (p.y2 - p.y1) * 0.12 : null;
     var shoW = ls && rs ? Math.abs(ls.x - rs.x) : (p.x2 - p.x1) * 0.35;
-    if (headY != null) {
-      var up = 0;
-      if (lw && lw.y < headY - shoW * 0.15) up++;
-      if (rw && rw.y < headY - shoW * 0.15) up++;
-      res.handsUp = up; res.sos = up === 2;
-    }
-    // trunk angle vs vertical (0 = upright, 90 = horizontal)
+    // trunk angle vs vertical (0 = upright, 90 = horizontal) — computed first so SOS can require an upright body
     if (sho && hip) {
       var dx = sho.x - hip.x, dy = hip.y - sho.y;
       res.trunkAngle = Math.round(Math.abs(Math.atan2(dx, dy)) * 180 / Math.PI);
+    }
+    // SOS: BOTH wrists CLEARLY above a real (not guessed) head point, confident, with the body upright — so stretching,
+    // reaching for something overhead, or a bent-over worker raising a hand does NOT trip a help alarm
+    var headY = nose && nose.v >= 0.5 ? nose.y : null;
+    if (headY != null && lw && rw && lw.v >= 0.5 && rw.v >= 0.5) {
+      var marg = shoW * 0.3;
+      var up = (lw.y < headY - marg ? 1 : 0) + (rw.y < headY - marg ? 1 : 0);
+      res.handsUp = up;
+      var upright = res.trunkAngle == null || res.trunkAngle < 35;
+      res.sos = up === 2 && upright;
     }
     var bw = p.x2 - p.x1, bh = p.y2 - p.y1;
     // fall / person down: horizontal torso or wide-low box with hips near shoulders' height

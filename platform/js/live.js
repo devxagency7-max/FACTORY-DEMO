@@ -750,11 +750,11 @@
   var PPE_AR = { helmet: 'الخوذة', glasses: 'نظارة الوقاية', vest: 'السترة العاكسة', gloves: 'القفازات', ears: 'سماعات الأذن' };
   var PPE_EN = { helmet: 'NO HELMET', glasses: 'NO GLASSES', vest: 'NO VEST', gloves: 'NO GLOVES', ears: 'NO EAR PROTECTION' };
   var PPE_SUB = { helmet: 'HARD HAT', glasses: 'SAFETY GLASSES', vest: 'HI-VIS VEST', gloves: 'SAFETY GLOVES · لما الإيدين تبان', ears: 'EAR MUFFS · ضوضاء المكن' };
-  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ppeEngine: 'browser' };
+  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ergo: false, station: false, ppeEngine: 'browser' };
   try { Object.assign(LAB, JSON.parse(localStorage.getItem('egic-lab') || '{}')); } catch (e) { }
   LAB.required = { helmet: true, glasses: true, vest: true, gloves: true, ears: true }; // PPE always checks the full set
   LAB.persistMs = 5000; // an item must be clearly missing for 5 s (wiping sweat, adjusting a visor) before anything is reported
-  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
+  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ergo: LAB.ergo, station: LAB.station, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
 
   U.register('live', function (v) {
     var st = { running: false, stream: null, src: null, srcKind: null, busy: false, last: null, pose: null, fps: 0, ms: 0, frames: 0, fpsT: performance.now(), tracker: null, lastFace: 0, faces: [], captures: [], behavior: { sosSince: 0, fallSince: 0, ergoSince: 0, absentSince: 0, present: false, cool: {} }, flip: 0, destroyed: false };
@@ -870,9 +870,9 @@
     }
     function secondFall(people, dw, dh, now) {
       if (!st2) return;
-      var down = (people || []).filter(function (p) { var b = p.box; return b.y1 >= dh * 0.02 && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > dh * 0.06; });
+      var down = (people || []).filter(function (p) { var b = p.box; return b.y1 >= dh * 0.02 && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > dh * 0.09 && b.y2 > dh * 0.55; });
       if (down.length) { if (!st2.pfallSince) st2.pfallSince = now; } else st2.pfallSince = 0;
-      if (st2.pfallSince && now - st2.pfallSince > 1600 && now - st2.fallCool > 30000) {
+      if (st2.pfallSince && now - st2.pfallSince > 2500 && now - st2.fallCool > 30000) {
         st2.fallCool = now; var snap = secondCanvas.toDataURL('image/jpeg', 0.8);
         API.post('events', { type: 'FALL', cameraId: st2.cam.id, conf: 0.9, source: 'live-pose', sev: 'CRITICAL', evidence: { kind: 'live', image: snap, model: 'Fall (person box)' }, note: 'شخص في وضع أفقي على الأرض' }).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: snap }); }).catch(function () { });
       }
@@ -898,6 +898,8 @@
       h('label', { class: 'switch', title: 'الكاميرا تلحق الوش/الشخص وتزوّم تلقائيًا، وتلف ناحية أي مخالفة أو خطر (كاميرات IP المتحركة فقط)' }, h('input', { type: 'checkbox', checked: LAB.autoTrack, onchange: function (e) { LAB.autoTrack = e.target.checked; saveLab(); if (ptzEl) ptzEl.style.opacity = LAB.autoTrack ? '0.5' : '1'; } }), '🎯 تتبّع تلقائي'));
     var engSel = U.select([['browser', 'محرك الذكاء: داخل الجهاز (المتصفح)'], ['titan', 'محرك الذكاء: خادم EGIC AI (Python)']], LAB.ppeEngine, function (x) { LAB.ppeEngine = x; saveLab(); st.tracker = null; prepareModels(); renderSide(); });
     var reqRow = h('div', { class: 'lab-controls' }, engSel, h('span', { class: 'muted', style: { fontSize: '12px' }, text: 'فحص PPE: ' + PPE_KEYS.map(function (k) { return PPE_AR[k]; }).join(' · ') }),
+      h('label', { class: 'switch', title: 'إنذار انحناء الظهر — للكاميرا المثبّتة على محطة عمل واحدة. اقفله مع كاميرا عامة لأن الانحناء شغل طبيعي' }, h('input', { type: 'checkbox', checked: LAB.ergo, onchange: function (e) { LAB.ergo = e.target.checked; saveLab(); } }), 'إنذار وضعية الظهر'),
+      h('label', { class: 'switch', title: 'إنذار غياب المشغّل عن منطقة محددة — للكاميرا المثبّتة على محطة عمل واحدة فقط' }, h('input', { type: 'checkbox', checked: LAB.station, onchange: function (e) { LAB.station = e.target.checked; saveLab(); } }), 'إنذار محطة بدون مشغّل'),
       h('label', { class: 'lab-ctl-pair muted', style: { fontSize: '12px' } }, 'مهلة غياب المشغّل (ثانية)', h('input', { class: 'input', id: 'stationSec', type: 'number', min: 3, max: 120, value: LAB.stationSec, style: { width: '70px', height: '30px' }, onchange: function (e) { LAB.stationSec = Math.max(3, +e.target.value || 8); saveLab(); } })));
     left.appendChild(controls); left.appendChild(reqRow);
     var side = h('div', { class: 'lab-side' });
@@ -1361,13 +1363,15 @@
     function checkPersonFall(people, d, now) {
       var B = st.behavior;
       // a body cut off by the frame edge (close-up: head + shoulders + a raised hand) is wide too — it can't be judged
-      var down = (people || []).filter(function (p) { var b = p.box; return !cutOff(b, d) && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > d.h * 0.06; });
+      // a real floor fall: box clearly wider than tall, big enough to trust (not a far noisy blob), and its BOTTOM is
+      // in the lower part of the frame (on the ground) — a wide box floating high up is not someone on the floor
+      var down = (people || []).filter(function (p) { var b = p.box; return !cutOff(b, d) && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > d.h * 0.09 && b.y2 > d.h * 0.55; });
       var big = down.sort(function (a, b) { return (b.box.x2 - b.box.x1) * (b.box.y2 - b.box.y1) - (a.box.x2 - a.box.x1) * (a.box.y2 - a.box.y1); })[0];
       // a person down = horizontal AND staying in place ~1.6 s (someone walking past a low machine, or bending, isn't)
       var bc = big ? { x: (big.box.x1 + big.box.x2) / 2, y: (big.box.y1 + big.box.y2) / 2, w: big.box.x2 - big.box.x1 } : null;
       if (bc && B.pfallAt && Math.hypot(bc.x - B.pfallAt.x, bc.y - B.pfallAt.y) > B.pfallAt.w * 0.6) B.pfallSince = 0;
       if (bc) { if (!B.pfallSince) { B.pfallSince = now; B.pfallAt = bc; } } else { B.pfallSince = 0; B.pfallAt = null; }
-      if (B.pfallSince && now - B.pfallSince > 1600 && (!B.cool.fall || now - B.cool.fall > 30000)) {
+      if (B.pfallSince && now - B.pfallSince > 2500 && (!B.cool.fall || now - B.cool.fall > 30000)) {
         B.cool.fall = now;
         raiseFall(big.box, d);
       }
@@ -1434,10 +1438,11 @@
           });
         }
       }
-      if (B.sosSince && now - B.sosSince > 2500) fire('sos', 'SOS_GESTURE', 2500, 20000, 'إشارة استغاثة يدوية', 'CRITICAL');
+      if (B.sosSince && now - B.sosSince > 3000) fire('sos', 'SOS_GESTURE', 3000, 20000, 'إشارة استغاثة يدوية', 'CRITICAL');
       if (B.fallSince && now - B.fallSince > 3000) fire('fall', 'FALL', 3000, 30000, 'سقوط / شخص على الأرض', 'CRITICAL');
-      if (B.ergoSince && now - B.ergoSince > 3000) fire('ergo', 'ERGONOMIC_RISK', 3000, 30000, 'وضعية عمل خطرة (انحناء الظهر)', 'LOW');
-      if (B.present && B.absentSince && now - B.absentSince > LAB.stationSec * 1000) { fire('station', 'UNATTENDED_STATION', 0, 30000, 'ماكينة بدون مشغّل', 'MEDIUM'); B.present = false; }
+      // ergonomics + unattended-station are workstation-specific and noisy on a wide factory camera → off unless turned on
+      if (LAB.ergo && B.ergoSince && now - B.ergoSince > 5000) fire('ergo', 'ERGONOMIC_RISK', 5000, 30000, 'وضعية عمل خطرة (انحناء الظهر)', 'LOW');
+      if (LAB.station && B.present && B.absentSince && now - B.absentSince > LAB.stationSec * 1000) { fire('station', 'UNATTENDED_STATION', 0, 30000, 'ماكينة بدون مشغّل', 'MEDIUM'); B.present = false; }
     }
     function drawRoi(g, roi, alert, d) {
       g.save(); g.setLineDash([12, 8]); g.lineWidth = Math.max(2, d.w / 500); g.strokeStyle = alert ? COL.bad : 'rgba(143,199,255,.9)'; g.strokeRect(roi.x1, roi.y1, roi.x2 - roi.x1, roi.y2 - roi.y1); g.setLineDash([]);
