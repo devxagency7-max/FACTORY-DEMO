@@ -259,10 +259,15 @@
   function center(b) { return { x: (b.x1 + b.x2) / 2, y: (b.y1 + b.y2) / 2 }; }
   function inside(p, b) { return p.x >= b.x1 && p.x <= b.x2 && p.y >= b.y1 && p.y <= b.y2; }
 
+  // A worker is judged MISSING an item only when the body part that should carry it is clearly visible:
+  // big enough in pixels and confidently detected. Otherwise the item is UNKNOWN — never a violation.
+  // (Item thresholds in PPE_CONF stay low on purpose: finding the PPE generously protects the worker.)
+  var JUDGE = { anchorScore: 0.4, headPx: 28, facePx: 48, personPx: 120, handPx: 18, handScore: 0.5, earScore: 0.5, earHeadPx: 40 };
+  function boxH(b) { return b.y2 - b.y1; }
   function analyzePPE(dets, W, H) {
     var by = {}; dets.forEach(function (d) { (by[d.label] = by[d.label] || []).push(d); });
     var persons = (by.person || []).slice();
-    var heads = by.head || [], faces = by.face || [], helmets = by.helmet || [], glasses = by.glasses || [], vests = (by['safety-vest'] || []);
+    var heads = by.head || [], faces = by.face || [], helmets = by.helmet || [], glasses = by.glasses || [], vests = (by['safety-vest'] || []).concat(by['safety-suit'] || []);
     var gloves = by.gloves || [], hands = by.hands || [], muffs = by['ear-mufs'] || [], ears = by.ear || [];
     // People without a person box (close-up webcam): synthesise one from head/face
     var anchors = heads.length ? heads : faces;
@@ -278,20 +283,23 @@
       var topZone = { x1: p.x1, y1: p.y1 - ph * 0.08, x2: p.x2, y2: p.y1 + ph * 0.5 };
       var head = pickBest(heads, function (h) { return inside(center(h), topZone) ? ioa(h, p) * h.score : 0; });
       var face = pickBest(faces, function (f) { return inside(center(f), topZone) ? ioa(f, p) * f.score : 0; });
+      var headScore = head ? head.score : face ? face.score : 0;
       if (!head && face) head = expand(face, 0.18, 0.45, 0.18, 0.1);
       var res = { box: p, head: head, face: face, items: {}, marks: [] };
       // helmet
       if (head) {
         var hz = expand(head, 0.25, 0.7, 0.25, 0.1);
         var hel = pickBest(helmets, function (x) { return (inside(center(x), hz) || ioa(x, hz) > 0.4) ? x.score : 0; });
-        res.items.helmet = hel ? { state: 'OK', box: hel, score: hel.score } : { state: 'MISSING', box: { x1: head.x1 - (head.x2 - head.x1) * 0.08, y1: head.y1 - (head.y2 - head.y1) * 0.35, x2: head.x2 + (head.x2 - head.x1) * 0.08, y2: head.y1 + (head.y2 - head.y1) * 0.4 } };
+        var headClear = boxH(head) >= JUDGE.headPx && headScore >= JUDGE.anchorScore;
+        res.items.helmet = hel ? { state: 'OK', box: hel, score: hel.score } : headClear ? { state: 'MISSING', box: { x1: head.x1 - (head.x2 - head.x1) * 0.08, y1: head.y1 - (head.y2 - head.y1) * 0.35, x2: head.x2 + (head.x2 - head.x1) * 0.08, y2: head.y1 + (head.y2 - head.y1) * 0.4 } } : { state: 'UNKNOWN' };
       } else res.items.helmet = { state: 'UNKNOWN' };
-      // safety glasses — needs a visible face
+      // safety glasses — needs a visible face, big enough that glasses would show
       if (face) {
         var gz = expand(face, 0.1, 0.05, 0.1, -0.35);
         var gl = pickBest(glasses, function (x) { return inside(center(x), gz) || ioa(x, face) > 0.5 ? x.score : 0; });
         var fh = face.y2 - face.y1;
-        res.items.glasses = gl ? { state: 'OK', box: gl, score: gl.score } : { state: 'MISSING', box: { x1: face.x1 + (face.x2 - face.x1) * 0.04, y1: face.y1 + fh * 0.2, x2: face.x2 - (face.x2 - face.x1) * 0.04, y2: face.y1 + fh * 0.55 } };
+        var faceClear = fh >= JUDGE.facePx && face.score >= JUDGE.anchorScore;
+        res.items.glasses = gl ? { state: 'OK', box: gl, score: gl.score } : faceClear ? { state: 'MISSING', box: { x1: face.x1 + (face.x2 - face.x1) * 0.04, y1: face.y1 + fh * 0.2, x2: face.x2 - (face.x2 - face.x1) * 0.04, y2: face.y1 + fh * 0.55 } } : { state: 'UNKNOWN' };
       } else res.items.glasses = { state: 'UNKNOWN' };
       // hi-vis vest — needs a visible torso
       var headH = head ? head.y2 - head.y1 : ph * 0.2;
@@ -301,23 +309,29 @@
         var tz = { x1: p.x1, y1: torsoTop - headH * 0.3, x2: p.x2, y2: p.y2 };
         var vs = pickBest(vests, function (x) { return (ioa(x, tz) > 0.45 && center(x).y > (head ? head.y2 - headH * 0.2 : p.y1)) ? x.score : 0; });
         var pw = p.x2 - p.x1;
-        res.items.vest = vs ? { state: 'OK', box: vs, score: vs.score } : { state: 'MISSING', box: { x1: p.x1 + pw * 0.12, y1: torsoTop, x2: p.x2 - pw * 0.12, y2: Math.min(p.y2, torsoTop + headH * 2.6) } };
+        var torsoClear = ph >= JUDGE.personPx && p.score >= JUDGE.anchorScore;
+        res.items.vest = vs ? { state: 'OK', box: vs, score: vs.score } : torsoClear ? { state: 'MISSING', box: { x1: p.x1 + pw * 0.12, y1: torsoTop, x2: p.x2 - pw * 0.12, y2: Math.min(p.y2, torsoTop + headH * 2.6) } } : { state: 'UNKNOWN' };
       } else res.items.vest = { state: 'UNKNOWN' };
-      // gloves — judged only when hands are visible: a gloved hand on the person = OK, a bare hand = MISSING
+      // gloves — judged only when a bare hand is clearly visible: a gloved hand on the person = OK, a confident bare hand = MISSING
       var hz2 = expand(p, 0.12, 0, 0.12, 0.05);
       var onMe = function (x) { return inside(center(x), hz2) && center(x).y > (head ? head.y2 : p.y1 + ph * 0.2); };
       var glv = pickBest(gloves, function (x) { return onMe(x) ? x.score : 0; });
       var bare = pickBest(hands, function (x) { return onMe(x) ? x.score : 0; });
-      res.items.gloves = glv && (!bare || glv.score >= bare.score * 0.8) ? { state: 'OK', box: glv, score: glv.score } : bare ? { state: 'MISSING', box: bare, score: bare.score } : { state: 'UNKNOWN' };
-      // ear protection (noisy machines) — ear muffs beside the head = OK; a bare ear, or a clear frontal face without muffs = MISSING
+      var bareClear = bare && bare.score >= JUDGE.handScore && boxH(bare) >= JUDGE.handPx;
+      res.items.gloves = glv && (!bare || glv.score >= bare.score * 0.6) ? { state: 'OK', box: glv, score: glv.score } : bareClear ? { state: 'MISSING', box: bare, score: bare.score } : { state: 'UNKNOWN' };
+      // ear protection — ear muffs beside the head = OK; only a clearly visible bare ear = MISSING
       if (head) {
         var hw = head.x2 - head.x1, hh2 = head.y2 - head.y1;
         var ez = { x1: head.x1 - hw * 0.45, y1: head.y1 - hh2 * 0.2, x2: head.x2 + hw * 0.45, y2: head.y2 + hh2 * 0.25 };
         var muff = pickBest(muffs, function (x) { return inside(center(x), ez) || ioa(x, ez) > 0.4 ? x.score : 0; });
         var ear = pickBest(ears, function (x) { return inside(center(x), ez) ? x.score : 0; });
-        var earBox = { x1: head.x1 - hw * 0.12, y1: head.y1 + hh2 * 0.3, x2: head.x2 + hw * 0.12, y2: head.y1 + hh2 * 0.75 };
-        res.items.ears = muff ? { state: 'OK', box: muff, score: muff.score } : ear ? { state: 'MISSING', box: ear, score: ear.score } : face && hw > W * 0.06 ? { state: 'MISSING', box: earBox } : { state: 'UNKNOWN' };
+        var earClear = ear && ear.score >= JUDGE.earScore && hh2 >= JUDGE.earHeadPx;
+        res.items.ears = muff ? { state: 'OK', box: muff, score: muff.score } : earClear ? { state: 'MISSING', box: ear, score: ear.score } : { state: 'UNKNOWN' };
       } else res.items.ears = { state: 'UNKNOWN' };
+      // a person cut off by the frame edge can't be judged on what is out of view (site footage: half-visible people were flagged)
+      var cutSide = p.x1 <= W * 0.015 || p.x2 >= W * 0.985, cutTop = p.y1 <= H * 0.01;
+      if (cutTop && res.items.helmet.state === 'MISSING') res.items.helmet = { state: 'UNKNOWN' };
+      if (cutSide) ['vest', 'gloves'].forEach(function (k) { if (res.items[k].state === 'MISSING') res.items[k] = { state: 'UNKNOWN' }; });
       return res;
     });
     // de-duplicate synthetic persons that overlap real ones
@@ -345,11 +359,12 @@
       function mine(arr) { return pickBest(arr, function (x) { return onPerson(p, x) ? x.score : 0; }); }
       var hat = mine(hats), noHat = mine(noHats), vest = mine(vests), noVest = mine(noVests);
       var res = { box: p, head: null, face: null, items: {}, marks: [] };
-      res.items.helmet = hat && !noHat ? { state: 'OK', box: hat, score: hat.score }
-        : { state: 'MISSING', box: noHat || { x1: p.x1 + pw * 0.25, y1: p.y1, x2: p.x2 - pw * 0.25, y2: p.y1 + ph * 0.2 }, score: noHat ? noHat.score : null };
-      if (p.synthetic && !vest && !noVest) res.items.vest = { state: 'UNKNOWN' }; // only a head is in view
-      else res.items.vest = vest && !noVest ? { state: 'OK', box: vest, score: vest.score }
-        : { state: 'MISSING', box: noVest || { x1: p.x1 + pw * 0.12, y1: p.y1 + ph * 0.22, x2: p.x2 - pw * 0.12, y2: p.y1 + ph * 0.6 }, score: noVest ? noVest.score : null };
+      // MISSING needs a positive «NO-…» detection on this person; seeing nothing is UNKNOWN, not a violation
+      var clearNo = function (x, y) { return x && x.score >= JUDGE.handScore && (!y || x.score > y.score); };
+      res.items.helmet = hat && !clearNo(noHat, hat) ? { state: 'OK', box: hat, score: hat.score }
+        : clearNo(noHat, hat) ? { state: 'MISSING', box: noHat, score: noHat.score } : { state: 'UNKNOWN' };
+      res.items.vest = vest && !clearNo(noVest, vest) ? { state: 'OK', box: vest, score: vest.score }
+        : clearNo(noVest, vest) && !p.synthetic ? { state: 'MISSING', box: noVest, score: noVest.score } : { state: 'UNKNOWN' };
       res.items.glasses = { state: 'UNKNOWN' }; res.items.gloves = { state: 'UNKNOWN' }; res.items.ears = { state: 'UNKNOWN' };
       return res;
     });
@@ -360,7 +375,9 @@
   /* ------------------------------------------------------------------ */
   function Tracker(opts) {
     this.tracks = []; this.nextId = 1;
-    this.opts = Object.assign({ window: 12, missingRatio: 0.55, persistMs: 1500, cooldownMs: 25000, maxAgeMs: 1500, required: ['helmet', 'glasses', 'vest'] }, opts || {});
+    // MISSING needs ≥ minKnown clear looks and ≥ 70 % of them missing; then it must last persistMs before anything is reported.
+    // Tracks survive short occlusions (maxAgeMs) so a person walking behind a machine keeps their identity.
+    this.opts = Object.assign({ window: 15, missingRatio: 0.7, minKnown: 6, persistMs: 5000, cooldownMs: 25000, maxAgeMs: 3000, required: ['helmet', 'glasses', 'vest'] }, opts || {});
   }
   Tracker.prototype.update = function (people, now) {
     var self = this, o = this.opts;
@@ -377,7 +394,11 @@
         h.push(st); if (h.length > o.window) h.shift();
         var known = h.filter(function (x) { return x !== 'UNKNOWN'; });
         var miss = h.filter(function (x) { return x === 'MISSING'; }).length;
-        var stable = known.length < 3 ? (best.stable && best.stable[k]) || 'UNKNOWN' : (miss / known.length >= o.missingRatio ? 'MISSING' : (known.length - miss) / known.length >= 0.5 ? 'OK' : ((best.stable && best.stable[k]) || 'UNKNOWN'));
+        var prev = (best.stable && best.stable[k]) || 'UNKNOWN';
+        var stable = known.length < 3 ? (prev === 'MISSING' ? 'UNKNOWN' : prev)
+          : (known.length - miss) / known.length >= 0.5 ? 'OK'
+          : known.length >= o.minKnown && miss / known.length >= o.missingRatio ? 'MISSING'
+          : (prev === 'MISSING' ? 'UNKNOWN' : prev);
         best.stable = best.stable || {}; best.stable[k] = stable;
         if (stable === 'MISSING') { if (!best.since[k]) best.since[k] = now; } else best.since[k] = null;
       });
@@ -397,10 +418,53 @@
     this.tracks.forEach(function (t) { if (inside(c, expand(t.box, 0.05, 0.1, 0.05, 0))) best = best && (best.box.x2 - best.box.x1) < (t.box.x2 - t.box.x1) ? best : t; });
     if (!best) return null;
     best.idVotes[identity] = (best.idVotes[identity] || 0) + (score || 1);
-    var top = null, tv = 0; Object.keys(best.idVotes).forEach(function (k) { if (best.idVotes[k] > tv) { tv = best.idVotes[k]; top = k; } });
-    best.identity = top === '__unknown__' ? null : top;
+    best.idCount = best.idCount || {}; best.idCount[identity] = (best.idCount[identity] || 0) + 1;
+    var top = null, tv = 0, sec = 0;
+    Object.keys(best.idVotes).forEach(function (k) { var v = best.idVotes[k]; if (v > tv) { sec = tv; tv = v; top = k; } else if (v > sec) sec = v; });
+    // an identity needs at least two matching looks and a clear lead over any other face match on the same person
+    best.identity = top && top !== '__unknown__' && best.idCount[top] >= 2 && tv >= sec * 1.5 ? top : null;
     return best;
   };
+
+  /* ------------------------------------------------------------------ */
+  /* Face identity for many people at once (face-api 128-D descriptors)   */
+  /* ------------------------------------------------------------------ */
+  // A face gets a name only when (1) it is close enough to that employee, (2) clearly closer to them than to
+  // anyone else, and (3) no other face in the same frame is a better match for the same employee.
+  // Anything less is "unknown" — with 30 people on site, a wrong name is worse than no name.
+  // maxDist raised so a known face is recognised at a normal distance (not only plastered to the lens); the margin
+  // (best clearly closer than second-best) is what still prevents giving one worker another worker's name.
+  var FACE_MATCH = { maxDist: 0.56, sureDist: 0.46, margin: 0.07 };
+  function faceDist(a, b) { var s = 0; for (var i = 0; i < a.length; i++) { var d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+  function matchFaces(descs, gallery, opts) {
+    var o = Object.assign({}, FACE_MATCH, opts || {});
+    var ids = Object.keys(gallery || {}).filter(function (k) { return gallery[k] && gallery[k].length; });
+    var res = descs.map(function (q) {
+      var per = ids.map(function (id) { var m = Infinity; gallery[id].forEach(function (g) { var d = faceDist(q, g); if (d < m) m = d; }); return { id: id, d: m }; }).sort(function (a, b) { return a.d - b.d; });
+      var best = per[0], second = per[1] ? per[1].d : Infinity;
+      var ok = best && best.d <= o.maxDist && (best.d <= o.sureDist || second - best.d >= o.margin);
+      return { label: ok ? best.id : 'unknown', dist: best ? best.d : 1, second: second };
+    });
+    // one employee → at most one face per frame: the closer face keeps the name, the other becomes unknown
+    var owner = {};
+    res.forEach(function (r, i) { if (r.label === 'unknown') return; var j = owner[r.label]; if (j == null || r.dist < res[j].dist) { if (j != null) res[j].label = 'unknown'; owner[r.label] = i; } else r.label = 'unknown'; });
+    return res;
+  }
+  // enrolment guard: how close is a new face to the OTHER employees already enrolled?
+  function nearestOther(descs, gallery, selfId) {
+    var best = { id: null, d: Infinity };
+    Object.keys(gallery || {}).forEach(function (id) {
+      if (id === selfId) return;
+      (gallery[id] || []).forEach(function (g) { descs.forEach(function (q) { var d = faceDist(q, g); if (d < best.d) best = { id: id, d: d }; }); });
+    });
+    return best;
+  }
+  // merge face boxes found on overlapping tiles / the full frame: keep the most confident of overlapping boxes
+  function mergeFaceBoxes(list, iouMax) {
+    var out = [];
+    list.slice().sort(function (a, b) { return b.score - a.score; }).forEach(function (f) { if (!out.some(function (o) { return iou(o.box, f.box) > (iouMax || 0.35); })) out.push(f); });
+    return out;
+  }
 
   /* ------------------------------------------------------------------ */
   /* Behaviour AI (pose): SOS gesture · fall · ergonomics · station       */
@@ -429,7 +493,8 @@
     }
     var bw = p.x2 - p.x1, bh = p.y2 - p.y1;
     // fall / person down: horizontal torso or wide-low box with hips near shoulders' height
-    if ((res.trunkAngle != null && res.trunkAngle > 58) || (bw > bh * 1.2 && (!(hip && sho) || Math.abs(hip.y - sho.y) < bh * 0.4))) res.fall = true;
+    // a bent-over worker (shovelling, picking something up) has a horizontal trunk but standing legs → a tall box; a body on the ground spreads sideways
+    if ((res.trunkAngle != null && res.trunkAngle > 60 && bw >= bh * 0.9) || (bw > bh * 1.2 && (!(hip && sho) || Math.abs(hip.y - sho.y) < bh * 0.4))) res.fall = true;
     // ergonomic risk (RULA-inspired, simplified): trunk flexion + arm elevation
     if (res.trunkAngle != null) {
       var score = res.trunkAngle < 10 ? 1 : res.trunkAngle < 25 ? 2 : res.trunkAngle < 45 ? 3 : 4;
@@ -515,6 +580,7 @@
     setTF: setTF, getTF: getTF, setBase: setBase, load: load, loaded: loaded, register: register, warmup: warmup, run: run, REGISTRY: REGISTRY,
     analyzePPE: analyzePPE, analyzePPEHF: analyzePPEHF, Tracker: Tracker, analyzePose: analyzePose, SKELETON: SKELETON,
     assemblePlate: assemblePlate, PlateVoter: PlateVoter, PPE_CONF: PPE_CONF, iou: iou, ioa: ioa, nms: nms, AR_DIGITS: AR_DIGITS,
+    matchFaces: matchFaces, nearestOther: nearestOther, mergeFaceBoxes: mergeFaceBoxes, faceDist: faceDist, FACE_MATCH: FACE_MATCH,
     SH17: SH17, OCR_N: OCR_N, OCR_M: OCR_M, OCR_EG: OCR_EG
   };
 });

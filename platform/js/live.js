@@ -462,7 +462,7 @@
       if (f.label === 'unknown') return;
       var v = self.votes[f.label] = (self.votes[f.label] || []).filter(function (t) { return now - t < 3000; }); v.push(now);
       // a confident match counts on its own (so attendance still fires while PPE is hogging the GPU); a weaker one needs 2 within 3 s
-      var strong = f.dist <= 0.42;
+      var strong = f.dist <= 0.46;
       if ((!strong && v.length < 2) || (self.sent[f.label] && now - self.sent[f.label] < 60000)) return;
       self.sent[f.label] = now;
       var img = null; try { img = faceCrop(src, f.box, 192); } catch (e) { }
