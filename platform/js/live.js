@@ -424,7 +424,22 @@
       return res.map(function (r) { var b = r.detection.box; return { box: { x1: b.x + x0, y1: b.y + y0, x2: b.x + b.width + x0, y2: b.y + b.height + y0 }, score: r.detection.score, descriptor: r.descriptor }; });
     });
   }
-  var tileCv = null;
+  var tileCv = null, roiCv = null;
+  // Zoom into ONE face: crop it from the full-resolution source and upscale so the recogniser gets plenty of pixels, then
+  // read a face print from that enlarged crop. This is what rescues recognition when the GPU is busy with PPE (the whole-frame
+  // pass runs at a tiny input size) or when the worker is a bit far — the face itself is still read big and sharp.
+  function faceDescFromCrop(src, box) {
+    if (!faceapi || !faceapi.nets.faceRecognitionNet.isLoaded) return Promise.resolve(null);
+    var d = srcDim(src), w = box.x2 - box.x1, hh = box.y2 - box.y1, pad = w * 0.4;
+    var sx = Math.max(0, box.x1 - pad), sy = Math.max(0, box.y1 - pad * 1.1);
+    var sw = Math.min(d.w - sx, w + pad * 2), sh = Math.min(d.h - sy, hh + pad * 2.2);
+    if (sw < 8 || sh < 8) return Promise.resolve(null);
+    var sc = Math.max(1, Math.min(3, 260 / sw)); // blow the crop up so the face is ~200px+ for the recogniser
+    var c = roiCv || (roiCv = document.createElement('canvas'));
+    c.width = Math.max(112, Math.round(sw * sc)); c.height = Math.max(112, Math.round(sh * sc));
+    try { c.getContext('2d').drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height); } catch (e) { return Promise.resolve(null); }
+    return faceapi.detectSingleFace(c, new faceapi.TinyFaceDetectorOptions({ inputSize: 256, scoreThreshold: 0.4 })).withFaceLandmarks(true).withFaceDescriptor().then(function (r) { return r ? r.descriptor : null; }, function () { return null; });
+  }
   // Many people at once: the whole frame, plus (for high-resolution sources) four overlapping 60 % tiles, so faces of
   // workers further away aren't shrunk to a few pixels by the detector's input size. Every face is then matched with
   // AI.matchFaces: one name per person, only when clearly that person.
@@ -446,7 +461,21 @@
     return steps.reduce(function (p, step) { return p.then(step).then(function (r) { all = all.concat(r); }); }, Promise.resolve()).then(function () {
       var faces = AI.mergeFaceBoxes(all);
       var m = AI.matchFaces(faces.map(function (f) { return f.descriptor; }), g);
-      return faces.map(function (f, i) { return { box: f.box, label: m[i].label, dist: m[i].dist, second: m[i].second }; });
+      var out = faces.map(function (f, i) { return { box: f.box, label: m[i].label, dist: m[i].dist, second: m[i].second }; });
+      if (!opts.refine) return out;
+      // second look: any face that came back unknown / weak gets zoomed and re-read from a high-res crop; keep the better match
+      var sure = (AI.FACE_MATCH && AI.FACE_MATCH.sureDist) || 0.46;
+      var weak = out.map(function (o, i) { return i; }).filter(function (i) { return out[i].label === 'unknown' || out[i].dist > sure; });
+      if (!weak.length) return out;
+      return weak.reduce(function (p, i) {
+        return p.then(function () {
+          return faceDescFromCrop(src, out[i].box).then(function (desc) {
+            if (!desc) return;
+            var mm = AI.matchFaces([desc], g)[0];
+            if (mm && mm.label !== 'unknown' && mm.dist < out[i].dist) { out[i].label = mm.label; out[i].dist = mm.dist; out[i].second = mm.second; out[i].refined = true; }
+          });
+        });
+      }, Promise.resolve()).then(function () { return out; });
     });
   }
   function faceCrop(src, box, size) {
@@ -1155,7 +1184,7 @@
       if (canvasSrc) st.src = phoneFrame(st, phoneImg) || st.src;
       var fsrc = st.src;
       var fsize = (st.inferEMA || 0) > 200 ? 320 : (st.inferEMA || 0) > 110 ? 416 : 512; // smaller face net on slow devices
-      detectFaces(fsrc, fsize, { tiles: (st.inferEMA || 0) < 120 }).then(function (faces) {
+      detectFaces(fsrc, fsize, { tiles: (st.inferEMA || 0) < 120, refine: true }).then(function (faces) {
         st.faces = faces; st.facesT = Date.now();
         // only trust a face big enough to be reliable for identity — tiny far faces cause wrong matches
         var minH = Math.max(30, d.h * 0.03);
