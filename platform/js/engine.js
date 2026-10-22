@@ -125,18 +125,22 @@
     INTRUSION:        { group: 'ZONE',      ar: 'تسلل خارج أوقات العمل',         en: 'After-hours intrusion',   sev: 'CRITICAL' },
     UNSAFE_PROXIMITY: { group: 'PROXIMITY', ar: 'اقتراب غير آمن من ماكينة',      en: 'Unsafe machine proximity', sev: 'HIGH' },
     PERSON_VEHICLE:   { group: 'PROXIMITY', ar: 'تقارب شخص ورافعة شوكية',        en: 'Person–forklift proximity', sev: 'HIGH' },
-    CROWD:            { group: 'BEHAVIOR',  ar: 'تكدّس وازدحام',                 en: 'Crowding / congestion',   sev: 'LOW' },
+    CROWD:            { group: 'BEHAVIOR',  ar: 'تكدّس وازدحام',                 en: 'Crowding / congestion',   sev: 'LOW', alert: true },
     RUNNING:          { group: 'BEHAVIOR',  ar: 'جري داخل الصالة',               en: 'Running / rushing',       sev: 'LOW' },
-    FALL:             { group: 'BEHAVIOR',  ar: 'سقوط شخص',                      en: 'Person fall',             sev: 'CRITICAL' },
+    FALL:             { group: 'BEHAVIOR',  ar: 'سقوط شخص',                      en: 'Person fall',             sev: 'CRITICAL', alert: true },
     WORK_AT_HEIGHT:   { group: 'BEHAVIOR',  ar: 'عمل على ارتفاع بدون حماية',     en: 'Unprotected work at height', sev: 'HIGH' },
-    SOS_GESTURE:      { group: 'BEHAVIOR',  ar: 'إشارة استغاثة يدوية',           en: 'SOS hand gesture',        sev: 'CRITICAL', ai: 'pose' },
+    SOS_GESTURE:      { group: 'BEHAVIOR',  ar: 'إشارة استغاثة يدوية',           en: 'SOS hand gesture',        sev: 'CRITICAL', ai: 'pose', alert: true },
     UNATTENDED_STATION: { group: 'BEHAVIOR', ar: 'ترك محطة التشغيل (ماكينة بدون مشغّل)', en: 'Unattended machine station', sev: 'MEDIUM', ai: 'pose' },
-    ERGONOMIC_RISK:   { group: 'BEHAVIOR',  ar: 'وضعية عمل خطرة (انحناء الظهر)', en: 'Ergonomic posture risk',  sev: 'LOW', ai: 'pose' },
-    FIRE_DETECTED:    { group: 'HAZARD',    ar: 'حريق — رصد لهب',                en: 'Fire detected',           sev: 'CRITICAL', ai: 'fire' },
-    SMOKE_DETECTED:   { group: 'HAZARD',    ar: 'دخان — إنذار مبكر بحريق',       en: 'Smoke detected',          sev: 'HIGH', ai: 'fire' },
+    ERGONOMIC_RISK:   { group: 'BEHAVIOR',  ar: 'وضعية عمل خطرة (انحناء الظهر)', en: 'Ergonomic posture risk',  sev: 'LOW', ai: 'pose', alert: true },
+    FIRE_DETECTED:    { group: 'HAZARD',    ar: 'حريق — رصد لهب',                en: 'Fire detected',           sev: 'CRITICAL', ai: 'fire', alert: true },
+    SMOKE_DETECTED:   { group: 'HAZARD',    ar: 'دخان — إنذار مبكر بحريق',       en: 'Smoke detected',          sev: 'HIGH', ai: 'fire', alert: true },
     SMOKING_DETECTED: { group: 'HAZARD',    ar: 'التدخين داخل المنشأة',          en: 'Smoking detected',        sev: 'HIGH', ai: 'smoking' }
   };
   var GROUP_AR = { PPE: 'معدات الوقاية', ZONE: 'المناطق', PROXIMITY: 'التقارب', BEHAVIOR: 'السلوك', HAZARD: 'الحريق والمخاطر' };
+  // Safety alerts (fire, fall, SOS…) call for help — they are never counted against a worker.
+  // Every other type is conduct: it stays PENDING until a named supervisor confirms it from the evidence.
+  var REVIEW_AR = { PENDING: 'بانتظار مراجعة المشرف', CONFIRMED: 'مخالفة مؤكدة', REJECTED: 'ليست مخالفة' };
+  function isConduct(type) { return !!TYPES[type] && !TYPES[type].alert; }
 
   // zone kind → [event type, weight]
   var KIND_EVENTS = {
@@ -168,7 +172,7 @@
     perimeter: []
   };
 
-  function Z(id, name, nameEn, kind, weight, restricted) { return { id: id, name: name, nameEn: nameEn, kind: kind, w: weight, restricted: !!restricted, required: (KIND_REQ[kind] || []).slice() }; }
+  function Z(id, name, nameEn, kind, weight, restricted, required) { return { id: id, name: name, nameEn: nameEn, kind: kind, w: weight, restricted: !!restricted, required: (required || KIND_REQ[kind] || []).slice() }; }
 
   var PROFILES = {
     plastics: [
@@ -209,6 +213,18 @@
       Z('GTE', 'البوابات', 'Gates', 'gate', 2),
       Z('PER', 'المحيط الخارجي', 'Perimeter', 'perimeter', 2)
     ],
+    // EGIC brass-rod plant (from the site survey, Oct 2026) — the real factory profile
+    egic: [
+      Z('CHK', 'مدخل العمال — فحص معدات الوقاية', 'Workers entrance — PPE check', 'checkpoint', 2, false, ['vest', 'shoes']),
+      Z('FRN', 'منصة الأفران — شحن الأفران', 'Furnace platform — charging', 'hot', 4, true, ['vest', 'gloves', 'shoes']),
+      Z('CST', 'ماكينات السحب والسباكة', 'Casting & drawing machines', 'hot', 4, false, ['vest', 'gloves', 'shoes']),
+      Z('HL1', 'عنبر السباكة — الممرات', 'Casting hall — aisles', 'production', 4, false, ['vest', 'shoes']),
+      Z('STR', 'تخزين الأسياخ', 'Rod storage', 'storage', 3, false, ['vest', 'shoes']),
+      Z('FIN', 'عنبر التشطيب والتقطيع', 'Finishing & cutting hall', 'machine', 5, false, ['vest', 'ears', 'gloves', 'shoes']),
+      Z('WLD', 'محطة اللحام', 'Welding station', 'hot', 1, false, ['vest', 'gloves']),
+      Z('CRN', 'الونش والتحميل', 'Crane & loading', 'dock', 2, false, ['vest', 'shoes']),
+      Z('GTE', 'البوابة', 'Gate', 'gate', 1, false, ['vest'])
+    ],
     warehouse: [
       Z('CHK', 'نقطة فحص معدات الوقاية — مدخل المخزن', 'PPE checkpoint — entrance', 'checkpoint', 1),
       Z('RCK', 'ممرات التخزين (Racking)', 'Racking aisles', 'storage', 7),
@@ -225,7 +241,8 @@
     plastics: ['البثق', 'الحقن', 'الخلط والخامات', 'الجودة', 'التغليف', 'المخازن والنقل الداخلي', 'الصيانة', 'الأمن'],
     foundry: ['الصب والسبك', 'الحدادة والقوالب', 'CNC والتشغيل', 'الطلاء الكهربائي', 'التجميع والاختبار', 'التغليف', 'الصيانة', 'الأمن'],
     assembly: ['الحقن', 'التجميع', 'الاختبار', 'التغليف', 'المخازن والنقل الداخلي', 'الصيانة', 'الأمن'],
-    warehouse: ['المخازن', 'الشحن والتفريغ', 'النقل الداخلي', 'الأمن']
+    warehouse: ['المخازن', 'الشحن والتفريغ', 'النقل الداخلي', 'الأمن'],
+    egic: ['الأفران والسباكة', 'السحب', 'التشطيب والتقطيع', 'المخازن والتحميل', 'الصيانة', 'الأمن']
   };
   var ZONE_DEPT = { // which department typically works in which zone kind
     checkpoint: null, production: null, hot: ['الصب والسبك', 'الحدادة والقوالب'], chemical: ['الطلاء الكهربائي'],
@@ -245,6 +262,11 @@
     { id: 'WH-02', code: 'W02', type: 'warehouse', profile: 'warehouse', name: 'المخزن 02', nameEn: 'Warehouse 02', sub: 'مخزن توزيع', country: 'EG', tz: 'Africa/Cairo', cams: 24, gates: [['G1', 'البوابة الرئيسية']], workers: 70, risk: 1.0 },
     { id: 'WH-03', code: 'W03', type: 'warehouse', profile: 'warehouse', name: 'المخزن 03', nameEn: 'Warehouse 03', sub: 'مخزن توزيع', country: 'EG', tz: 'Africa/Cairo', cams: 20, gates: [['G1', 'البوابة الرئيسية']], workers: 60, risk: 0.96 },
     { id: 'KSA-01', code: 'K01', type: 'ksa', profile: 'warehouse', name: 'موقع السعودية', nameEn: 'KSA Site', sub: 'المملكة العربية السعودية', country: 'SA', tz: 'Asia/Riyadh', cams: 36, gates: [['G1', 'البوابة الرئيسية'], ['G2', 'بوابة الشاحنات']], workers: 95, risk: 0.92 }
+  ];
+
+  // the real factory (EGIC_DEMO=0): one plant, real cameras only. Id stays PLT-01 so live cameras and employees keep their site.
+  var FACTORY_SITES = [
+    { id: 'PLT-01', code: 'P01', type: 'plant', profile: 'egic', name: 'مصنع EGIC', nameEn: 'EGIC Plant', sub: 'سباكة وسحب أسياخ النحاس', country: 'EG', tz: 'Africa/Cairo', cams: 0, gates: [['G1', 'البوابة الرئيسية']], workers: 0, risk: 1 }
   ];
 
   // attendance defaults — shift times, late/early grace and weekly day off (editable from the attendance screen)
@@ -284,6 +306,9 @@
     this.rng = new Rng(this.seed);
     this.live = new Rng((this.seed ^ 0x9e3779b9) + (Date.now() % 100000));
     this.mode = opts.mode || 'embedded';
+    // demo = simulated sites, history, gate traffic and live sim events. A real factory runs with demo:false.
+    this.demo = opts.demo !== false;
+    this.sites = this.demo ? SITES : FACTORY_SITES;
     this.startedAt = Date.now();
     this.build();
   }
@@ -299,7 +324,7 @@
     return function () { self.listeners = self.listeners.filter(function (f) { return f !== fn; }); };
   };
 
-  Engine.prototype.site = function (id) { for (var i = 0; i < SITES.length; i++) if (SITES[i].id === id) return SITES[i]; return null; };
+  Engine.prototype.site = function (id) { for (var i = 0; i < this.sites.length; i++) if (this.sites[i].id === id) return this.sites[i]; return null; };
   Engine.prototype.zone = function (siteId, zoneId) {
     var s = this.site(siteId); if (!s) return null;
     var zs = PROFILES[s.profile];
@@ -313,12 +338,12 @@
     this.cameras = []; this.camById = {};
     this.workers = []; this.workerById = {};
     this.gates = [];
-    SITES.forEach(function (s) {
+    this.sites.forEach(function (s) {
       var zs = PROFILES[s.profile];
-      // cameras distributed by zone weight
+      // cameras distributed by zone weight (demo only — the factory lists its real IP cameras)
       var totW = zs.reduce(function (a, z) { return a + z.w; }, 0);
-      var alloc = zs.map(function (z) { return Math.max(1, Math.round(s.cams * z.w / totW)); });
-      var diff = s.cams - alloc.reduce(function (a, b) { return a + b; }, 0);
+      var alloc = zs.map(function (z) { return self.demo ? Math.max(1, Math.round(s.cams * z.w / totW)) : 0; });
+      var diff = self.demo ? s.cams - alloc.reduce(function (a, b) { return a + b; }, 0) : 0;
       for (var k = 0; diff !== 0 && k < 100; k++) { var idx = k % alloc.length; if (diff > 0) { alloc[idx]++; diff--; } else if (alloc[idx] > 1) { alloc[idx]--; diff++; } }
       var n = 0;
       zs.forEach(function (z, zi) {
@@ -337,7 +362,7 @@
             kind: z.kind === 'perimeter' ? r.pick(['bullet', 'ptz']) : z.kind === 'storage' ? r.pick(['dome', 'bullet']) : r.pick(['dome', 'bullet', 'bullet']),
             res: res, fps: fps, protocol: protocol, status: st, assessment: assess, lowLight: dark,
             modules: (KIND_EVENTS[z.kind] || []).map(function (p) { return p[0]; }),
-            ip: '10.' + (20 + SITES.indexOf(s)) + '.' + (10 + zi) + '.' + (20 + c),
+            ip: '10.' + (20 + self.sites.indexOf(s)) + '.' + (10 + zi) + '.' + (20 + c),
             scene: z.kind
           };
           self.cameras.push(cam); self.camById[id] = cam;
@@ -345,9 +370,9 @@
       });
       // ANPR lane cameras (one per gate lane)
       s.gates.forEach(function (g, gi) {
-        ['IN', 'OUT'].forEach(function (lane) {
+        (self.demo ? ['IN', 'OUT'] : []).forEach(function (lane) {
           var id = s.code + '-ANPR-' + g[0] + lane;
-          var cam = { id: id, siteId: s.id, zoneId: 'GTE', name: g[1] + ' · ' + (lane === 'IN' ? 'دخول' : 'خروج'), nameEn: 'ANPR ' + g[0] + ' ' + lane, kind: 'anpr', res: '4MP', fps: 25, protocol: 'RTSP / ONVIF', status: 'online', assessment: gi === 1 && s.type === 'plant' && lane === 'OUT' ? 'UPGRADE' : 'USE', lowLight: false, modules: ['ANPR'], ip: '10.' + (20 + SITES.indexOf(s)) + '.99.' + (10 + gi * 2 + (lane === 'IN' ? 0 : 1)), scene: 'gate', lane: lane, gateId: s.id + '-' + g[0] };
+          var cam = { id: id, siteId: s.id, zoneId: 'GTE', name: g[1] + ' · ' + (lane === 'IN' ? 'دخول' : 'خروج'), nameEn: 'ANPR ' + g[0] + ' ' + lane, kind: 'anpr', res: '4MP', fps: 25, protocol: 'RTSP / ONVIF', status: 'online', assessment: gi === 1 && s.type === 'plant' && lane === 'OUT' ? 'UPGRADE' : 'USE', lowLight: false, modules: ['ANPR'], ip: '10.' + (20 + self.sites.indexOf(s)) + '.99.' + (10 + gi * 2 + (lane === 'IN' ? 0 : 1)), scene: 'gate', lane: lane, gateId: s.id + '-' + g[0] };
           self.cameras.push(cam); self.camById[id] = cam;
         });
         self.gates.push({ id: s.id + '-' + g[0], siteId: s.id, code: g[0], name: g[1], lanes: 2, barrier: 'closed', controller: gi === 0 ? 'Relay / Dry-contact' : 'API (يُحدد أثناء التقييم)', lastPlate: null });
@@ -366,12 +391,21 @@
     var liveAnpr = { id: 'P01-ANPR-LIVE', siteId: 'PLT-01', zoneId: 'GTE', name: 'قارئ اللوحات المباشر · البوابة الرئيسية', nameEn: 'Live ANPR · main gate', kind: 'webcam', res: 'حسب الجهاز', fps: 30, protocol: 'WebRTC / ملف فيديو', status: 'standby', assessment: 'USE', lowLight: false, modules: ['ANPR'], ip: 'local', scene: 'gate', live: true, gateId: 'PLT-01-G1' };
     this.cameras.unshift(liveAnpr); this.camById[liveAnpr.id] = liveAnpr;
 
+    if (!this.demo) { this.buildEmpty(); this.buildHealth(); return; }
     this.buildVehicles();
     this.buildHistory();
     this.buildGateHistory();
     this.buildHealth();
     this.buildAudit();
     this.buildReports();
+  };
+  Engine.prototype.buildEmpty = function () {
+    var self = this;
+    this.vehicles = []; this.vehByNorm = {};
+    this.events = []; this.eventById = {};
+    this.obs = {}; this.gateLog = []; this.onSite = {};
+    this.sites.forEach(function (s) { self.obs[s.id] = []; self.onSite[s.id] = {}; });
+    this.audit = []; this.reports = [];
   };
 
   /* ---------------- vehicles registry ---------------- */
@@ -410,7 +444,7 @@
         var v = {
           id: 'VEH-' + pad(self.vehicles.length + 1, 4), plate: p.text, plateLatin: p.latin || null, country: p.country,
           category: c[0], owner: c[1], type: c[2], status: c[4],
-          sites: ksa ? ['KSA-01'] : c[0] === 'employee' ? [r.pick(SITES.filter(function (s) { return s.country === 'EG'; })).id] : SITES.filter(function (s) { return s.country === 'EG'; }).map(function (s) { return s.id; }),
+          sites: ksa ? ['KSA-01'] : c[0] === 'employee' ? [r.pick(self.sites.filter(function (s) { return s.country === 'EG'; })).id] : self.sites.filter(function (s) { return s.country === 'EG'; }).map(function (s) { return s.id; }),
           validUntil: c[4] === 'visitor' ? self.now + r.int(1, 10) * DAY : c[4] === 'blacklisted' ? null : self.now + r.int(60, 365) * DAY,
           note: c[4] === 'blacklisted' ? 'تنبيه أمني عند الظهور' : '', demo: true
         };
@@ -434,7 +468,7 @@
     this.obs = {}; // obs[siteId] = array of hourly buckets {t, n, ok:{item:count}, all}
     var start = localDayStart(this.now, 'Africa/Cairo') - (this.days - 1) * DAY;
     var endHour = Math.floor(this.now / HOUR) * HOUR;
-    SITES.forEach(function (s) {
+    this.sites.forEach(function (s) {
       var buckets = []; self.obs[s.id] = buckets;
       var zs = PROFILES[s.profile];
       var siteCams = self.cameras.filter(function (c) { return c.siteId === s.id && c.kind !== 'anpr' && !c.live; });
@@ -517,7 +551,8 @@
   Engine.prototype.addHistoricalEvent = function (r, s, z, cam, type, ts, siteWorkers, hour) {
     var t = TYPES[type];
     var identified = t.group !== 'ZONE' || type === 'RESTRICTED_ZONE';
-    var w = identified && type !== 'INTRUSION' && r.chance(0.78) ? this.pickWorker(r, siteWorkers, z, hour) : null;
+    // simulated events must never name a person: the worker list holds real employees
+    var w = null;
     // simulated events are not tied to people; the department still comes from the zone (keeps BBS by department)
     var zd = (ZONE_DEPT[z.kind] || []).filter(function (d) { return DEPTS[s.profile].indexOf(d) >= 0; });
     var dept = w ? w.dept : identified && type !== 'INTRUSION' ? r.pick(zd.length ? zd : DEPTS[s.profile]) : null;
@@ -550,7 +585,7 @@
     var r = new Rng(this.seed + 211), self = this;
     this.gateLog = []; this.onSite = {}; // onSite[siteId] = { norm: {plate, ts, vehicleId} }
     var start = this.now - this.gateDays * DAY;
-    SITES.forEach(function (s) {
+    this.sites.forEach(function (s) {
       self.onSite[s.id] = {};
       var gates = self.gates.filter(function (g) { return g.siteId === s.id; });
       var pool = self.vehicles.filter(function (v) { return v.sites.indexOf(s.id) >= 0; });
@@ -599,7 +634,7 @@
   Engine.prototype.buildHealth = function () {
     var r = new Rng(this.seed + 313), self = this;
     this.nodes = [{ id: 'CORE-01', role: 'central', name: 'المنصة المركزية', siteId: null, cpu: 38, gpu: 0, ram: 52, disk: 41, temp: 49, streams: 0, fps: 0, latency: 34, uptimeH: 1442, services: ['API Gateway', 'Auth / RBAC', 'Event Service', 'Rule Engine', 'Notification Service', 'BBS Analytics', 'Reporting', 'Audit Log', 'Database', 'Evidence Store'] }];
-    SITES.forEach(function (s) {
+    this.sites.forEach(function (s) {
       var cams = self.cameras.filter(function (c) { return c.siteId === s.id && !c.live; }).length;
       self.nodes.push({ id: 'EDGE-' + s.code, role: 'edge', name: 'عقدة المعالجة الطرفية — ' + s.name, siteId: s.id, cpu: r.int(35, 62), gpu: r.int(48, 78), ram: r.int(44, 70), disk: r.int(30, 72), temp: r.int(52, 71), streams: cams, fps: 0, latency: r.int(38, 95), uptimeH: r.int(120, 1400), services: ['Stream Ingest', 'Camera Health', 'AI Inference', 'Tracker', 'Zone Rules', 'Evidence Buffer', 'ANPR'] });
     });
@@ -631,8 +666,8 @@
     this.emit('health', this.healthSnapshot());
   };
   Engine.prototype.healthSnapshot = function () {
-    var cams = this.cameras.filter(function (c) { return !c.live; });
-    var on = cams.filter(function (c) { return c.status === 'online'; }).length;
+    var cams = this.cameras.filter(function (c) { return !c.live || c.ipcam; });
+    var on = cams.filter(function (c) { return c.status === 'online' || (c.ipcam && c.status !== 'offline'); }).length;
     var deg = cams.filter(function (c) { return c.status === 'degraded'; }).length;
     return {
       nodes: this.nodes, cameras: { total: cams.length, online: on, degraded: deg, offline: cams.length - on - deg },
@@ -674,7 +709,7 @@
   Engine.prototype.complianceBetween = function (siteId, t0, t1) {
     var n = 0, all = 0, ok = {}; PPE_ORDER.forEach(function (k) { ok[k] = 0; });
     var self = this;
-    SITES.forEach(function (s) {
+    this.sites.forEach(function (s) {
       if (siteId && siteId !== 'ALL' && s.id !== siteId) return;
       var b = self.obs[s.id];
       for (var i = b.length - 1; i >= 0; i--) {
@@ -706,12 +741,20 @@
     }
     var comp = this.complianceBetween(siteId, now - DAY, now + HOUR);
     var compPrev = this.complianceBetween(siteId, now - 8 * DAY, now - 7 * DAY);
-    var cams = this.cameras.filter(function (c) { return f(c) && !c.live; });
-    var camsOn = cams.filter(function (c) { return c.status === 'online'; }).length;
+    var cams = this.cameras.filter(function (c) { return f(c) && (!c.live || c.ipcam); });
+    var camsOn = cams.filter(function (c) { return c.status === 'online' || (c.ipcam && c.status !== 'offline'); }).length;
     var lpNow = localParts(now, 'Africa/Cairo');
     var shift = shiftOf(lpNow.h);
     var onShift = 0;
-    SITES.forEach(function (s) { if (!siteId || siteId === 'ALL' || s.id === siteId) onShift += Math.round(s.workers * (shift === 'C' ? 0.18 : 0.4) * self.hourActivity(lpNow.h)); });
+    // demo: estimated head-count · factory: employees the face cameras saw arrive and not leave
+    if (this.demo) this.sites.forEach(function (s) { if (!siteId || siteId === 'ALL' || s.id === siteId) onShift += Math.round(s.workers * (shift === 'C' ? 0.18 : 0.4) * self.hourActivity(lpNow.h)); });
+    else onShift = this.attendanceDay({ site: siteId }).totals.inNow;
+    var pendingReview = 0, confirmedToday = 0;
+    for (var j = 0; j < this.events.length; j++) {
+      var ev = this.events[j]; if (!f(ev)) continue;
+      if (ev.review === 'PENDING') pendingReview++;
+      else if (ev.review === 'CONFIRMED' && ev.reviewTs >= day0) confirmedToday++;
+    }
     var vehiclesOn = 0;
     Object.keys(this.onSite).forEach(function (sid) { if (!siteId || siteId === 'ALL' || sid === siteId) vehiclesOn += Object.keys(self.onSite[sid]).length; });
     var authToday = this.gateLog.filter(function (g) { return f(g) && g.ts >= day0 && g.lane === 'IN' && (g.decision === 'AUTHORIZED' || g.decision === 'VISITOR'); }).length;
@@ -728,7 +771,8 @@
       exposureMin: round(exposureSec / 60, 1), intrusionsToday: intrusionsToday,
       cameras: { total: cams.length, online: camsOn }, vehiclesOnSite: vehiclesOn, authorizedToday: authToday, deniedToday: deniedToday,
       resolutionRate: resolutionRate, meanResponseSec: meanResp, atRiskPer1k: round(atRiskRate, 2), bbsScore: bbs,
-      sites: SITES.length
+      pendingReview: pendingReview, confirmedToday: confirmedToday,
+      sites: this.sites.length, demo: this.demo
     };
   };
 
@@ -778,14 +822,15 @@
     var arr = Object.keys(map).map(function (k) { return map[k]; });
     var comp = this.complianceBetween(siteId, now - 7 * DAY, now + HOUR).index || 95;
     var maxE = arr.reduce(function (a, z) { return Math.max(a, z.events); }, 1);
-    arr.forEach(function (z) { z.compliance = round(clamp(comp + 4 - 9 * (z.ppe / maxE), 70, 99.5), 1); z.risk = z.critical * 3 + z.events; });
+    // demo: an illustrative per-zone figure · factory: no invented percentages — only what was measured
+    arr.forEach(function (z) { z.compliance = self.demo ? round(clamp(comp + 4 - 9 * (z.ppe / maxE), 70, 99.5), 1) : null; z.risk = z.critical * 3 + z.events; });
     arr.sort(function (a, b) { return b.risk - a.risk; });
     return arr;
   };
 
   Engine.prototype.siteStats = function () {
     var self = this, now = Date.now();
-    return SITES.map(function (s) {
+    return this.sites.map(function (s) {
       var sum = self.summary(s.id);
       var ev7 = 0; for (var i = 0; i < self.events.length; i++) { var e = self.events[i]; if (now - e.ts > 7 * DAY) break; if (e.siteId === s.id) ev7++; }
       return { id: s.id, code: s.code, name: s.name, nameEn: s.nameEn, sub: s.sub, type: s.type, country: s.country, cams: sum.cameras.total, camsOnline: sum.cameras.online, compliance: sum.compliance, active: sum.activeViolations, critical24: sum.critical24, events7: ev7, vehiclesOnSite: sum.vehiclesOnSite, bbs: sum.bbsScore, gates: s.gates.length, workers: s.workers };
@@ -804,6 +849,7 @@
       if (q.group && q.group !== 'ALL' && e.group !== q.group) return false;
       if (q.sev && q.sev !== 'ALL' && e.sev !== q.sev) return false;
       if (q.status && q.status !== 'ALL') { if (q.status === 'ACTIVE') { if (!ACTIVE[e.status]) return false; } else if (e.status !== q.status) return false; }
+      if (q.review && q.review !== 'ALL' && e.review !== q.review) return false;
       if (q.source && q.source !== 'ALL') { if (q.source === 'live' ? e.source.indexOf('live') !== 0 : e.source !== q.source) return false; }
       if (q.worker && e.workerId !== q.worker) return false;
       if (q.camera && e.cameraId !== q.camera) return false;
@@ -838,7 +884,10 @@
     o.enrolled = !!(this.faces[id] && this.faces[id].length); o.faces = this.faces[id] ? this.faces[id].length : 0;
     o.compliance = w.obs ? round(100 * w.obsOk / w.obs, 1) : null;
     o.events = evs.slice(0, 200); o.byType = byType;
-    o.violations = evs.length;
+    // only supervisor-confirmed conduct counts as a violation on the worker's record
+    o.violations = evs.filter(function (e) { return e.review === 'CONFIRMED'; }).length;
+    o.pending = evs.filter(function (e) { return e.review === 'PENDING'; }).length;
+    o.rejected = evs.filter(function (e) { return e.review === 'REJECTED'; }).length;
     o.live = evs.filter(function (e) { return e.source.indexOf('live') === 0; }).length;
     return o;
   };
@@ -949,10 +998,12 @@
       sev: data.sev || this.severityFor(type, z, null), conf: data.conf != null ? round(+data.conf, 2) : 0.9, status: 'OPEN',
       workerId: w ? w.id : null, dept: w ? w.dept : null, shift: shiftOf(lp.h), assignee: null, ackTs: null, resTs: null,
       durationSec: data.durationSec || 0, evidence: data.evidence || { kind: 'none' }, source: data.source || 'live-ai',
-      incident: data.incident || null, missing: data.missing || null, note: data.note || ''
+      incident: data.incident || null, missing: data.missing || null, note: data.note || '',
+      review: isConduct(type) ? 'PENDING' : null, reviewer: null, reviewTs: null, reviewNote: ''
     };
     this.events.unshift(ev); this.eventById[id] = ev;
-    if (w) { w.violations++; w.lastSeen = ts; w.obs += 1; }
+    // nothing is counted against the worker here — only a supervisor's confirmation does that
+    if (w) w.lastSeen = ts;
     this.emit('event', this.decorate(ev));
     this.emit('kpi', this.summary('ALL'));
     return this.decorate(ev);
@@ -964,17 +1015,53 @@
     return { id: w.id, obs: w.obs, obsOk: w.obsOk };
   };
 
+  Engine.prototype.countViolation = function (e, sign) {
+    var w = e.workerId ? this.workerById[e.workerId] : null; if (!w) return;
+    w.violations = Math.max(0, w.violations + sign); w.obs = Math.max(0, w.obs + sign);
+  };
+
   Engine.prototype.eventAction = function (id, action, body) {
     var e = this.eventById[id]; if (!e) return null;
-    var now = Date.now(), before = e.status;
+    var now = Date.now(), before = e.status, beforeReview = e.review;
     body = body || {};
-    if (action === 'ack') { e.status = 'ACK'; e.ackTs = e.ackTs || now; }
+    var actor = String(body.actor || '').trim(), note = String(body.note || '').trim();
+    var reviewable = e.review != null;
+    if (action === 'confirm' || action === 'set_worker') {
+      if (!reviewable) return { error: 'not_reviewable', message: 'الحدث ده تنبيه سلامة، مش مخالفة بتتسجل على عامل.' };
+      if (!actor) return { error: 'reviewer_required', message: 'اكتب اسم المشرف اللي بيراجع.' };
+    }
+    if (action === 'set_worker' || (action === 'confirm' && body.workerId !== undefined)) {
+      var nw = body.workerId ? this.workerById[body.workerId] : null;
+      if (body.workerId && !nw) return { error: 'worker_not_found', message: 'الموظف ده مش موجود.' };
+      if (e.review === 'CONFIRMED') this.countViolation(e, -1);
+      e.workerId = nw ? nw.id : null;
+      if (nw) e.dept = nw.dept;
+      if (e.review === 'CONFIRMED') this.countViolation(e, 1);
+    }
+    if (action === 'confirm') {
+      if (!e.workerId) return { error: 'worker_required', message: 'حدد العامل الأول قبل تأكيد المخالفة.' };
+      if (!note) return { error: 'note_required', message: 'اكتب إيه اللي شفته في الدليل وأكّد المخالفة.' };
+      if (e.review !== 'CONFIRMED') { e.review = 'CONFIRMED'; this.countViolation(e, 1); }
+      e.reviewer = actor; e.reviewTs = now; e.reviewNote = note;
+      if (ACTIVE[e.status]) { e.status = 'RESOLVED'; e.ackTs = e.ackTs || now; e.resTs = now; }
+    }
+    else if (action === 'ack') { e.status = 'ACK'; e.ackTs = e.ackTs || now; }
     else if (action === 'assign') { e.status = 'ASSIGNED'; e.ackTs = e.ackTs || now; e.assignee = body.assignee || 'مشرف السلامة — الوردية ' + ({ A: 'أ', B: 'ب', C: 'ج' })[e.shift || 'A']; }
     else if (action === 'resolve') { e.status = 'RESOLVED'; e.ackTs = e.ackTs || now; e.resTs = now; }
-    else if (action === 'false_positive') { e.status = 'FALSE_POSITIVE'; e.resTs = now; }
-    else if (action === 'reopen') { e.status = 'OPEN'; e.resTs = null; }
-    if (body.note) e.note = body.note;
-    this.logAudit(body.actor || 'مدير السلامة (HSE Admin)', 'تحديث حالة حدث (' + before + ' → ' + e.status + ')', id);
+    else if (action === 'false_positive') {
+      e.status = 'FALSE_POSITIVE'; e.resTs = now;
+      if (reviewable) { if (e.review === 'CONFIRMED') this.countViolation(e, -1); e.review = 'REJECTED'; e.reviewer = actor || null; e.reviewTs = now; e.reviewNote = note; }
+    }
+    else if (action === 'reopen') {
+      e.status = 'OPEN'; e.resTs = null;
+      if (reviewable) { if (e.review === 'CONFIRMED') this.countViolation(e, -1); e.review = 'PENDING'; e.reviewer = null; e.reviewTs = null; e.reviewNote = ''; }
+    }
+    if (body.note && action !== 'confirm' && action !== 'false_positive') e.note = body.note;
+    var w = e.workerId ? this.workerById[e.workerId] : null;
+    var what = action === 'confirm' ? 'تأكيد مخالفة على ' + (w ? w.name : '—')
+      : action === 'set_worker' ? 'تحديد العامل: ' + (w ? w.name : 'بدون')
+      : 'تحديث حالة حدث (' + before + ' → ' + e.status + (beforeReview !== e.review ? ' · ' + (REVIEW_AR[e.review] || '') : '') + ')';
+    this.logAudit(actor || 'مدير السلامة (HSE Admin)', what, id);
     var d = this.decorate(e);
     this.emit('event_update', d);
     this.emit('kpi', this.summary('ALL'));
@@ -1010,7 +1097,7 @@
   Engine.prototype.setFaces = function (workerId, descriptors, mode) {
     var w = this.workerById[workerId]; if (!w) return null;
     var clean = (descriptors || []).filter(function (d) { return d && d.length === 128; }).map(function (d) { return Array.prototype.map.call(d, function (x) { return round(+x, 5); }); });
-    var list = (mode === 'replace' ? [] : (this.faces[workerId] || [])).concat(clean).slice(-10);
+    var list = (mode === 'replace' ? [] : (this.faces[workerId] || [])).concat(clean).slice(-20);
     if (list.length) this.faces[workerId] = list; else delete this.faces[workerId];
     w.enrolled = list.length > 0;
     this.emit('faces', { workerId: workerId, count: list.length });
@@ -1210,7 +1297,7 @@
     var norm = normalizePlate(data.plate);
     var v = this.vehByNorm[norm];
     if (!v) {
-      v = { id: 'VEH-' + pad(this.vehicles.length + 1, 4), plate: data.plate, country: data.country || 'EG', category: data.category || 'visitor', owner: data.owner || 'زائر', type: data.type || 'ملاكي', status: data.status || 'visitor', sites: data.sites || SITES.map(function (s) { return s.id; }), validUntil: Date.now() + 3 * DAY, note: data.note || '', demo: false };
+      v = { id: 'VEH-' + pad(this.vehicles.length + 1, 4), plate: data.plate, country: data.country || 'EG', category: data.category || 'visitor', owner: data.owner || 'زائر', type: data.type || 'ملاكي', status: data.status || 'visitor', sites: data.sites || this.sites.map(function (s) { return s.id; }), validUntil: Date.now() + 3 * DAY, note: data.note || '', demo: false };
       this.vehicles.unshift(v); this.vehByNorm[norm] = v;
     } else {
       ['status', 'owner', 'type', 'category', 'note'].forEach(function (k) { if (data[k] !== undefined) v[k] = data[k]; });
@@ -1241,7 +1328,7 @@
   /* ---------------- live simulation loop ---------------- */
   Engine.prototype.simTick = function () {
     var r = this.live, self = this;
-    var s = r.weighted(SITES.map(function (s) { return [s, s.cams * s.risk]; }));
+    var s = r.weighted(this.sites.map(function (s) { return [s, s.cams * s.risk]; }));
     var zs = PROFILES[s.profile];
     var lp = localParts(Date.now(), s.tz);
     var night = lp.h >= 22 || lp.h < 6;
@@ -1267,7 +1354,7 @@
 
   Engine.prototype.gateTick = function () {
     var r = this.live, self = this;
-    var s = r.weighted(SITES.map(function (s) { return [s, s.type === 'warehouse' ? 1.3 : 1]; }));
+    var s = r.weighted(this.sites.map(function (s) { return [s, s.type === 'warehouse' ? 1.3 : 1]; }));
     var inside = Object.keys(this.onSite[s.id]);
     var exiting = inside.length > 6 && r.chance(0.45);
     if (exiting) {
@@ -1302,9 +1389,11 @@
       (function sched() { t.id = setTimeout(function () { try { fn.call(self); } catch (e) { if (typeof console !== 'undefined') console.error(e); } sched(); }, min + Math.random() * (max - min)); })();
       self.timers.push(t);
     }
-    loop(this.simTick, opts.eventMin || 7000, opts.eventMax || 16000);
-    loop(this.gateTick, opts.gateMin || 9000, opts.gateMax || 20000);
-    loop(this.tickHealth, 3000, 3000);
+    if (this.demo) {
+      loop(this.simTick, opts.eventMin || 7000, opts.eventMax || 16000);
+      loop(this.gateTick, opts.gateMin || 9000, opts.gateMax || 20000);
+      loop(this.tickHealth, 3000, 3000);
+    }
     this.running = true;
   };
   Engine.prototype.stop = function () { this.timers.forEach(function (t) { clearTimeout(t.id); }); this.timers = []; this.running = false; };
@@ -1350,9 +1439,9 @@
   /* ------------------------------------------------------------------ */
   Engine.prototype.meta = function () {
     return {
-      version: VERSION, mode: this.mode, sites: SITES.map(function (s) { return { id: s.id, code: s.code, name: s.name, nameEn: s.nameEn, sub: s.sub, type: s.type, country: s.country, tz: s.tz, cams: s.cams, gates: s.gates.map(function (g) { return { id: s.id + '-' + g[0], name: g[1] }; }), workers: s.workers, zones: PROFILES[s.profile].map(function (z) { return { id: z.id, name: z.name, nameEn: z.nameEn, kind: z.kind, restricted: z.restricted, required: z.required }; }) }; }),
+      version: VERSION, mode: this.mode, sites: this.sites.map(function (s) { return { id: s.id, code: s.code, name: s.name, nameEn: s.nameEn, sub: s.sub, type: s.type, country: s.country, tz: s.tz, cams: s.cams, gates: s.gates.map(function (g) { return { id: s.id + '-' + g[0], name: g[1] }; }), workers: s.workers, zones: PROFILES[s.profile].map(function (z) { return { id: z.id, name: z.name, nameEn: z.nameEn, kind: z.kind, restricted: z.restricted, required: z.required }; }) }; }),
       types: TYPES, groups: GROUP_AR, sevAr: SEV_AR, ppe: PPE, ppeOrder: PPE_ORDER, presenterId: this.presenterId, shifts: this.attSettings.shifts,
-      demo: true, notice: 'بيانات عرض توضيحية — Simulated demo data'
+      demo: this.demo, notice: this.demo ? 'بيانات عرض توضيحية — Simulated demo data' : null, reviewAr: REVIEW_AR
     };
   };
 
@@ -1405,7 +1494,7 @@
       } else if (m === 'POST') {
         switch (r[0]) {
           case 'events':
-            if (r[1] && r[2] === 'action') { var d = this.eventAction(r[1], body.action, body); return d ? ok(d) : nf; }
+            if (r[1] && r[2] === 'action') { var d = this.eventAction(r[1], body.action, body); return !d ? nf : d.error ? { status: 400, body: d } : ok(d); }
             return ok(this.addEvent(body));
           case 'observe': return ok(this.observe(body.workerId, !!body.compliant));
           case 'workers':

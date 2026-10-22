@@ -522,6 +522,10 @@
     for (var i = 0; i < 5; i++) { dots.appendChild(h('span', { style: { width: '12px', height: '12px', borderRadius: '50%', border: '2px solid var(--line-3, #456)' } })); thumbs.appendChild(h('div', { style: { aspectRatio: '1', borderRadius: '8px', background: 'var(--bg-3, #111)', border: '1px dashed var(--line-2, #345)' } })); }
     var consent = h('input', { type: 'checkbox', id: 'enrollConsent' });
     var profSel = h('select', { class: 'select', id: 'enrollWorker' });
+    var enrolledMap = {}; // workerId → already has a face print?
+    var addMode = h('input', { type: 'checkbox', checked: true });
+    var addRow = h('label', { class: 'switch', style: { display: 'none', fontSize: '12.5px' } }, addMode, 'أضف للبصمة الحالية بدل استبدالها (سجّل من زوايا/كاميرات مختلفة لتعرّف أدق)');
+    function syncAddRow() { addRow.style.display = enrolledMap[profSel.value] ? '' : 'none'; }
     var go = h('button', { class: 'btn btn--primary', type: 'button', text: 'ابدأ التسجيل (5 لقطات)', disabled: true });
     var msg = h('div', { role: 'alert', style: { fontSize: '13px', minHeight: '18px', lineHeight: '1.7' } });
     var stepEls = [1, 2, 3].map(function (n) { return h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: '10px', fontSize: '13px', border: '1px solid var(--line-2, #345)' } }, h('b', { text: String(n) }), h('span', { text: ['مين الموظف', 'الكاميرا تشوف وشه', '5 لقطات'][n - 1] })); });
@@ -530,8 +534,8 @@
     API.get('workers', { limit: 1000 }).then(function (r) {
       if (!r.items.length) profSel.appendChild(h('option', { value: '', text: 'مفيش موظفين — ضيف موظف الأول من «الموظفون والملفات»' }));
       var pick = workerId || (r.items.filter(function (w) { return !w.enrolled; })[0] || {}).id;
-      r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id + (w.enrolled ? ' · ✓ عنده بصمة (هتتسجل من جديد)' : ' · بدون بصمة') }); if (w.id === pick) o.selected = true; profSel.appendChild(o); });
-      refresh();
+      r.items.forEach(function (w) { enrolledMap[w.id] = !!w.enrolled; var o = h('option', { value: w.id, text: w.name + ' · ' + w.id + (w.enrolled ? ' · ✓ عنده بصمة (' + (w.faces || '') + ' لقطة)' : ' · بدون بصمة') }); if (w.id === pick) o.selected = true; profSel.appendChild(o); });
+      syncAddRow(); refresh();
     });
     var source = function () { return mode === 'ip' ? ipImg : mode === 'device' ? vid : liveSrc(); };
     function showMsg(t) { camMsg.textContent = t; if (!camMsg.parentNode) stage.appendChild(camMsg); }
@@ -608,7 +612,7 @@
       }
       timer = setTimeout(loop, 350);
     }
-    profSel.addEventListener('change', function () { resetShots(); refresh(); });
+    profSel.addEventListener('change', function () { resetShots(); syncAddRow(); refresh(); });
     consent.addEventListener('change', refresh);
     function resetShots() { [].forEach.call(dots.children, function (d) { d.style.background = ''; }); [].forEach.call(thumbs.children, function (t) { clear(t); t.style.border = '1px dashed var(--line-2, #345)'; }); }
     go.addEventListener('click', function () {
@@ -641,15 +645,17 @@
           throw new Error('الوش ده شبه جدًا بصمة «' + other + '». اتأكد إن الموظف الصح هو اللي واقف. ولو بصمة «' + other + '» متسجلة غلط، امسحها من ملفه الأول.');
         }
         var photo = null; try { photo = faceCrop(source(), lastBox, 256); } catch (e) { }
-        return API.post('faces', { workerId: wid, descriptors: samples, mode: 'replace' }).then(function () { return API.post('workers', { id: wid, photo: photo || undefined }); }).then(function (w) {
+        var saveMode = (enrolledMap[wid] && addMode.checked) ? 'add' : 'replace';
+        return API.post('faces', { workerId: wid, descriptors: samples, mode: saveMode }).then(function () { return API.post('workers', { id: wid, photo: photo || undefined }); }).then(function (w) {
           loadFaces();
           capturing = false; setStep(3);
           clear(msg); msg.appendChild(h('div', { style: { color: '#45D48C', fontWeight: '700', fontSize: '15px' }, text: '✓ اتسجلت بصمة ' + w.name + ' — الكاميرات هتعرفه من دلوقتي وتسجل حضوره' }));
           U.toast('تم تسجيل بصمة الوجه', w.name);
-          var opt2 = [].filter.call(profSel.options, function (o) { return o.value === wid; })[0]; if (opt2) opt2.text = w.name + ' · ' + w.id + ' · ✓ عنده بصمة (هتتسجل من جديد)';
+          enrolledMap[wid] = true;
+          var opt2 = [].filter.call(profSel.options, function (o) { return o.value === wid; })[0]; if (opt2) opt2.text = w.name + ' · ' + w.id + ' · ✓ عنده بصمة (' + ((w.faces != null ? w.faces : samples.length)) + ' لقطة)';
           var next = [].filter.call(profSel.options, function (o) { return /بدون بصمة/.test(o.text); })[0];
           if (next) { profSel.value = next.value; msg.appendChild(h('div', { class: 'muted', text: 'اخترتلك الموظف اللي بعده: ' + next.text.split(' · ')[0] + ' — خليه يقف قدام الكاميرا.' })); resetShots(); }
-          refresh();
+          syncAddRow(); refresh();
           if (done) done(w);
         });
       }).catch(function (e) { capturing = false; msg.textContent = '⚠️ ' + e.message; refresh(); });
@@ -659,6 +665,7 @@
       h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, stepEls),
       h('label', { class: 'field' }, h('span', { text: '① الموظف' }), profSel),
       h('label', { class: 'switch' }, consent, 'الموظف موافق على تسجيل بصمة وشه للحضور والسلامة'),
+      addRow,
       h('div', { class: 'field' }, h('span', { text: '② الكاميرا — لازم يبان مربع أخضر حوالين الوش' }), own ? camPick : null, stage),
       state,
       h('div', { class: 'field' }, h('span', { text: '③ اللقطات' }), dots, thumbs),
