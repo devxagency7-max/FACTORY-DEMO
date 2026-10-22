@@ -803,9 +803,9 @@
     }
     function secondFall(people, dw, dh, now) {
       if (!st2) return;
-      var down = (people || []).filter(function (p) { var b = p.box; return (b.x2 - b.x1) > (b.y2 - b.y1) * 1.5 && (b.y2 - b.y1) > dh * 0.07; });
+      var down = (people || []).filter(function (p) { var b = p.box; return b.y1 >= dh * 0.02 && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > dh * 0.06; });
       if (down.length) { if (!st2.pfallSince) st2.pfallSince = now; } else st2.pfallSince = 0;
-      if (st2.pfallSince && now - st2.pfallSince > 1200 && now - st2.fallCool > 30000) {
+      if (st2.pfallSince && now - st2.pfallSince > 1600 && now - st2.fallCool > 30000) {
         st2.fallCool = now; var snap = secondCanvas.toDataURL('image/jpeg', 0.8);
         API.post('events', { type: 'FALL', cameraId: st2.cam.id, conf: 0.9, source: 'live-pose', sev: 'CRITICAL', evidence: { kind: 'live', image: snap, model: 'Fall (person box)' }, note: 'شخص في وضع أفقي على الأرض' }).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: snap }); }).catch(function () { });
       }
@@ -1294,18 +1294,19 @@
     function checkPersonFall(people, d, now) {
       var B = st.behavior;
       // a body cut off by the frame edge (close-up: head + shoulders + a raised hand) is wide too — it can't be judged
-      var down = (people || []).filter(function (p) { var b = p.box; return !cutOff(b, d) && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.5 && (b.y2 - b.y1) > d.h * 0.07; });
+      var down = (people || []).filter(function (p) { var b = p.box; return !cutOff(b, d) && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > d.h * 0.06; });
       var big = down.sort(function (a, b) { return (b.box.x2 - b.box.x1) * (b.box.y2 - b.box.y1) - (a.box.x2 - a.box.x1) * (a.box.y2 - a.box.y1); })[0];
-      // a person down = horizontal AND staying in place for 3 s (someone walking past a low machine, or bending, isn't)
+      // a person down = horizontal AND staying in place ~1.6 s (someone walking past a low machine, or bending, isn't)
       var bc = big ? { x: (big.box.x1 + big.box.x2) / 2, y: (big.box.y1 + big.box.y2) / 2, w: big.box.x2 - big.box.x1 } : null;
-      if (bc && B.pfallAt && Math.hypot(bc.x - B.pfallAt.x, bc.y - B.pfallAt.y) > B.pfallAt.w * 0.5) B.pfallSince = 0;
+      if (bc && B.pfallAt && Math.hypot(bc.x - B.pfallAt.x, bc.y - B.pfallAt.y) > B.pfallAt.w * 0.6) B.pfallSince = 0;
       if (bc) { if (!B.pfallSince) { B.pfallSince = now; B.pfallAt = bc; } } else { B.pfallSince = 0; B.pfallAt = null; }
-      if (B.pfallSince && now - B.pfallSince > 3000 && (!B.cool.fall || now - B.cool.fall > 30000)) {
+      if (B.pfallSince && now - B.pfallSince > 1600 && (!B.cool.fall || now - B.cool.fall > 30000)) {
         B.cool.fall = now;
         raiseFall(big.box, d);
       }
     }
-    function cutOff(b, d) { return b.y2 > d.h * 0.96 || b.y1 < d.h * 0.02 || b.x1 < d.w * 0.015 || b.x2 > d.w * 0.985; }
+    // only a box cut at the TOP is a close-up head-crop (not a fall); a real fall on the floor touches the bottom/side edges normally
+    function cutOff(b, d) { return b.y1 < d.h * 0.02; }
     function raiseFall(box, d) {
       st.alertTarget = { box: box, t: performance.now() };
       var wid = resolveWorker(trackFor(box));
