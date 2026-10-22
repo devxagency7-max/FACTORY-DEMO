@@ -475,12 +475,16 @@
      different angles. What is stored is a 128-number face print per shot (not the photo); every camera compares faces to it. */
   var ENROLL_HINTS = ['بص للكاميرا على طول', 'ميّل راسك شوية يمين', 'ميّل راسك شوية شمال', 'ارفع دقنك شوية', 'بص للكاميرا تاني'];
   function enrollDialog(workerId, done, liveSrc) {
-    var own = !liveSrc, stream = null, closed = false, capturing = false, checking = false, check = { ok: false }, raf = 0, timer = 0;
+    // own = standalone (no live-lab source passed in): user picks laptop camera OR a connected IP camera.
+    var own = !liveSrc, mode = own ? 'device' : 'live', stream = null, closed = false, capturing = false, checking = false, check = { ok: false }, raf = 0, timer = 0;
+    function mirrored() { return mode === 'device'; }
     var vid = h('video', { playsinline: true, muted: true, autoplay: true, style: { position: 'absolute', width: '1px', height: '1px', opacity: 0 } });
+    var ipImg = h('img', { crossOrigin: 'anonymous', style: { position: 'absolute', width: '1px', height: '1px', opacity: 0 } });
+    var camPick = h('select', { class: 'select' });
     var pv = h('canvas', { style: { width: '100%', display: 'block', borderRadius: '12px', background: '#000' } });
     var camMsg = h('div', { style: { position: 'absolute', inset: '0', display: 'grid', placeItems: 'center', textAlign: 'center', padding: '18px', color: '#fff', fontSize: '14px', lineHeight: '1.9', background: 'rgba(0,0,0,.72)', borderRadius: '12px' } },
-      own ? '📷 المتصفح هيسألك عن الكاميرا (فوق على الشمال) — دوس «Allow» أو «سماح»' : 'جارٍ استخدام الكاميرا الشغالة…');
-    var stage = h('div', { style: { position: 'relative', minHeight: '200px' } }, pv, vid, camMsg);
+      own ? 'جارٍ تجهيز الكاميرا…' : 'جارٍ استخدام الكاميرا الشغالة…');
+    var stage = h('div', { style: { position: 'relative', minHeight: '200px' } }, pv, vid, ipImg, camMsg);
     var state = h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600', fontSize: '14px', minHeight: '22px' } });
     var dots = h('div', { style: { display: 'flex', gap: '6px' } });
     var thumbs = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' } });
@@ -498,18 +502,41 @@
       r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id + (w.enrolled ? ' · ✓ عنده بصمة (هتتسجل من جديد)' : ' · بدون بصمة') }); if (w.id === pick) o.selected = true; profSel.appendChild(o); });
       refresh();
     });
-    var source = function () { return own ? vid : liveSrc(); };
-    if (own) openCam().then(function (s) { if (closed) return stopStream(s); stream = s; vid.srcObject = s; return vid.play(); }).catch(function (e) { camMsg.textContent = '⚠️ ' + camErrMsg(e) + ' — من علامة القفل جنب العنوان، اسمح للكاميرا وافتح الشاشة دي تاني.'; });
+    var source = function () { return mode === 'ip' ? ipImg : mode === 'device' ? vid : liveSrc(); };
+    function showMsg(t) { camMsg.textContent = t; if (!camMsg.parentNode) stage.appendChild(camMsg); }
+    function startDevice() {
+      if (stream) return; // already running
+      showMsg('📷 المتصفح هيسألك عن الكاميرا (فوق على الشمال) — دوس «Allow» أو «سماح»');
+      openCam().then(function (s) { if (closed || mode !== 'device') return stopStream(s); stream = s; vid.srcObject = s; return vid.play(); }).catch(function (e) { if (mode === 'device') showMsg('⚠️ ' + camErrMsg(e) + ' — من علامة القفل جنب العنوان، اسمح للكاميرا وافتح الشاشة دي تاني.'); });
+    }
+    // switch which camera we enrol from: 'device' (laptop) or 'ip:<id>' (a connected factory camera)
+    function useSource(val) {
+      resetShots(); check = { ok: false };
+      if (val === 'device') { mode = 'device'; ipImg.src = ''; startDevice(); }
+      else { mode = 'ip'; var id = val.slice(3); if (stream) { stopStream(stream); stream = null; vid.srcObject = null; } showMsg('جارٍ تشغيل كاميرا المصنع…'); ipImg.src = (API.state.base || '') + '/api/v1/ipcams/' + id + '/mjpeg?t=' + Date.now(); }
+      refresh();
+    }
+    camPick.addEventListener('change', function () { useSource(camPick.value); });
+    if (own) {
+      // build the camera picker; prefer a connected IP camera (the real deployment camera) over the laptop
+      camPick.appendChild(h('option', { value: 'device', text: '📷 كاميرا اللابتوب' }));
+      fetch((API.state.base || '') + '/api/v1/ipcams', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+        var cams = (j.items || j || []).filter(function (c) { return c && c.id; });
+        cams.forEach(function (c) { camPick.appendChild(h('option', { value: 'ip:' + c.id, text: '🌐 ' + (c.name || c.id) })); });
+        if (cams.length) { camPick.value = 'ip:' + cams[0].id; useSource(camPick.value); }
+        else startDevice();
+      }, function () { startDevice(); });
+    }
     // live preview + face box, drawn every frame
     function draw() {
       if (closed) return;
       var src = source(), w = src && (src.videoWidth || src.naturalWidth || src.width), hh = src && (src.videoHeight || src.naturalHeight || src.height);
       if (w && hh) {
-        if (camMsg.parentNode && (!own || vid.videoWidth)) camMsg.remove();
+        if (camMsg.parentNode && w) camMsg.remove();
         if (pv.width !== w || pv.height !== hh) { pv.width = w; pv.height = hh; }
-        var g = pv.getContext('2d'); g.save(); if (own) { g.translate(w, 0); g.scale(-1, 1); } g.drawImage(src, 0, 0, w, hh); g.restore();
+        var g = pv.getContext('2d'); g.save(); if (mirrored()) { g.translate(w, 0); g.scale(-1, 1); } g.drawImage(src, 0, 0, w, hh); g.restore();
         (check.boxes || []).forEach(function (b) {
-          var x = own ? w - b.x2 : b.x1; g.lineWidth = Math.max(3, w / 220); g.strokeStyle = check.ok ? '#45D48C' : '#FAB219'; g.strokeRect(x, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+          var x = mirrored() ? w - b.x2 : b.x1; g.lineWidth = Math.max(3, w / 220); g.strokeStyle = check.ok ? '#45D48C' : '#FAB219'; g.strokeRect(x, b.y1, b.x2 - b.x1, b.y2 - b.y1);
         });
       }
       raf = requestAnimationFrame(draw);
@@ -517,7 +544,7 @@
     // is there exactly ONE clear face, close enough and lit enough?
     function inspect() {
       var src = source(), w = src && (src.videoWidth || src.naturalWidth || src.width), hh = src && (src.videoHeight || src.naturalHeight || src.height);
-      if (!w || !faceapi) return Promise.resolve({ ok: false, boxes: [], why: own ? 'مستني الكاميرا…' : 'مستني صورة من الكاميرا…' });
+      if (!w || !faceapi) return Promise.resolve({ ok: false, boxes: [], why: mode === 'device' ? 'مستني الكاميرا…' : 'مستني صورة من الكاميرا…' });
       return faceapi.detectAllFaces(src, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 })).then(function (all) {
         var boxes = all.map(function (r) { var b = r.box; return { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height }; });
         var big = boxes.filter(function (b) { return b.x2 - b.x1 > 50; });
@@ -567,7 +594,7 @@
             samples.push(Array.from(r.descriptor)); var b = r.detection.box; lastBox = { x1: b.x, y1: b.y, x2: b.x + b.width, y2: b.y + b.height };
             dots.children[samples.length - 1].style.background = '#45D48C';
             var t = thumbs.children[samples.length - 1]; t.style.border = '1px solid #45D48C';
-            try { t.appendChild(h('img', { src: faceCrop(source(), lastBox, 96), alt: '', style: { width: '100%', borderRadius: '8px', display: 'block', transform: own ? 'scaleX(-1)' : '' } })); } catch (e) { }
+            try { t.appendChild(h('img', { src: faceCrop(source(), lastBox, 96), alt: '', style: { width: '100%', borderRadius: '8px', display: 'block', transform: mirrored() ? 'scaleX(-1)' : '' } })); } catch (e) { }
           });
         }).then(function () { if (samples.length < 5 && tries < 40) return new Promise(function (res) { setTimeout(res, 700); }).then(one); });
       }
@@ -596,12 +623,12 @@
         });
       }).catch(function (e) { capturing = false; msg.textContent = '⚠️ ' + e.message; refresh(); });
     });
-    function closeIt() { closed = true; clearTimeout(timer); cancelAnimationFrame(raf); stopStream(stream); }
+    function closeIt() { closed = true; clearTimeout(timer); cancelAnimationFrame(raf); stopStream(stream); try { ipImg.src = ''; } catch (e) { } }
     U.openModal('تسجيل وش موظف', h('div', { style: { display: 'grid', gap: '12px' } },
       h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, stepEls),
       h('label', { class: 'field' }, h('span', { text: '① الموظف' }), profSel),
       h('label', { class: 'switch' }, consent, 'الموظف موافق على تسجيل بصمة وشه للحضور والسلامة'),
-      h('div', { class: 'field' }, h('span', { text: '② الكاميرا — لازم يبان مربع أخضر حوالين الوش' }), stage),
+      h('div', { class: 'field' }, h('span', { text: '② الكاميرا — لازم يبان مربع أخضر حوالين الوش' }), own ? camPick : null, stage),
       state,
       h('div', { class: 'field' }, h('span', { text: '③ اللقطات' }), dots, thumbs),
       h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, go, h('button', { class: 'btn btn--ghost', type: 'button', text: 'قفل', onclick: function () { U.closeModal(); } })),
