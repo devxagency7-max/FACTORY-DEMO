@@ -43,9 +43,9 @@ IDX = {c: i for i, c in enumerate(CLASSES)}
 
 PROMPT = (
     "You are labelling safety-gear in a brass FOUNDRY (not a construction site). Find every person and every piece of "
-    "protective equipment, and return ONLY a JSON array. Each item: "
-    '{"label": <one of ' + ", ".join(CLASSES) + '>, "box": [x1,y1,x2,y2]} '
-    "with box coordinates as fractions of width/height in [0,1] (x1,y1 top-left; x2,y2 bottom-right).\n"
+    "protective equipment. Return ONLY a JSON list where each entry is "
+    '{"box_2d": [ymin, xmin, ymax, xmax], "label": <one of ' + ", ".join(CLASSES) + ">} "
+    "with box_2d normalized to 0-1000.\n"
     "Foundry gear guidance:\n"
     "- 'welding-shield': a welding/face mask covering or flipped on the head (black, green-tinted, or clear visor).\n"
     "- 'thermal-apron': a SILVER aluminized/reflective apron over the torso (this foundry's body protection, NOT a vest).\n"
@@ -105,14 +105,14 @@ def to_yolo(items, W, H):
         lbl = str(it.get("label", "")).strip()
         if lbl not in IDX:
             continue
-        b = it.get("box") or []
-        if len(b) != 4:
+        if isinstance(it.get("box_2d"), list) and len(it["box_2d"]) == 4:   # Gemini native: [ymin, xmin, ymax, xmax] 0..1000
+            y1, x1, y2, x2 = [float(v) / 1000.0 for v in it["box_2d"]]
+        elif isinstance(it.get("box"), list) and len(it["box"]) == 4:      # other models: [x1, y1, x2, y2] 0..1 (or 0..1000)
+            x1, y1, x2, y2 = [float(v) for v in it["box"]]
+            if max(x1, y1, x2, y2) > 1.5:
+                x1, y1, x2, y2 = x1 / 1000.0, y1 / 1000.0, x2 / 1000.0, y2 / 1000.0
+        else:
             continue
-        x1, y1, x2, y2 = [float(v) for v in b]
-        scale = 1.0
-        if max(x1, y1, x2, y2) > 1.5:              # model returned 0..1000 or pixels
-            scale = 1000.0 if max(x1, y1, x2, y2) <= 1000 else max(W, H)
-        x1, y1, x2, y2 = x1 / scale, y1 / scale, x2 / scale, y2 / scale
         x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
         y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
         cw, ch = x2 - x1, y2 - y1
@@ -121,6 +121,57 @@ def to_yolo(items, W, H):
         lines.append(f"{IDX[lbl]} {(x1+x2)/2:.6f} {(y1+y2)/2:.6f} {cw:.6f} {ch:.6f}")
         boxes.append((lbl, x1 * W, y1 * H, x2 * W, y2 * H))
     return lines, boxes
+
+
+# labels that can't both be true of the same body part — if the VLM gives both on overlapping boxes it is guessing
+CONTRADICT = [({"hard-hat", "welding-shield"}, {"bare-head"}), ({"work-gloves"}, {"bare-hands"}),
+              ({"hi-vis-vest"}, {"thermal-apron"})]
+MIN_GEAR_H = 0.05  # gear boxes shorter than 5% of the image are far-away guesses (the wide-hall shots)
+PART_CLASSES = {"hard-hat", "welding-shield", "work-gloves", "n95-mask", "safety-glasses", "safety-boots", "bare-head", "bare-hands"}
+
+
+def _overlap(a, b):
+    ix = max(0.0, min(a[3], b[3]) - max(a[1], b[1])); iy = max(0.0, min(a[4], b[4]) - max(a[2], b[2]))
+    inter = ix * iy
+    if inter <= 0:
+        return 0.0
+    sa = (a[3] - a[1]) * (a[4] - a[2]); sb = (b[3] - b[1]) * (b[4] - b[2])
+    return inter / max(1e-6, min(sa, sb))  # overlap relative to the smaller box
+
+
+def sanitize(boxes, W, H):
+    """Drop what the VLM is unsure of: tiny far-away gear, and contradicting labels on the same spot.
+    → (kept boxes, list of reasons dropped). Same rule as the live system: unsure = don't teach it."""
+    dropped = []
+    keep = []
+    for b in boxes:
+        if b[0] != "person" and (b[4] - b[2]) / H < MIN_GEAR_H:
+            dropped.append(f"tiny {b[0]}")
+        else:
+            keep.append(b)
+    # a body-PART box must be much smaller than the person wearing it — a "boot" box the size of the whole body is wrong
+    persons = [b for b in keep if b[0] == "person"]
+    sized = []
+    for b in keep:
+        if b[0] in PART_CLASSES:
+            cx, cy = (b[1] + b[3]) / 2, (b[2] + b[4]) / 2
+            owner = [p for p in persons if p[1] <= cx <= p[3] and p[2] <= cy <= p[4]]
+            if owner and (b[4] - b[2]) > 0.45 * min(p[4] - p[2] for p in owner):
+                dropped.append(f"oversized {b[0]}")
+                continue
+        sized.append(b)
+    keep = sized
+    bad = set()
+    for i, a in enumerate(keep):
+        for j, b in enumerate(keep):
+            if j <= i:
+                continue
+            for s1, s2 in CONTRADICT:
+                if ((a[0] in s1 and b[0] in s2) or (a[0] in s2 and b[0] in s1)) and _overlap(a, b) > 0.5:
+                    bad.update((i, j))
+    for i in sorted(bad):
+        dropped.append(f"contradiction {keep[i][0]}")
+    return [b for i, b in enumerate(keep) if i not in bad], dropped
 
 
 def review_image(src: Path, boxes, dst: Path):
@@ -139,16 +190,44 @@ def review_image(src: Path, boxes, dst: Path):
     im.save(dst, quality=85)
 
 
+def refilter(out: Path):
+    """Re-apply the safety filters to the saved raw VLM answers (out/raw) — no API calls, no cost."""
+    nr = out / "needs_review.txt"
+    if nr.exists():
+        nr.unlink()
+    raws = sorted((out / "raw").glob("*.json"))
+    tot_keep = tot_drop = 0
+    for rp in raws:
+        img = out / "images" / (rp.stem + ".jpg")
+        if not img.exists():
+            continue
+        W, H = Image.open(img).size
+        _, boxes = to_yolo(json.loads(rp.read_text(encoding="utf-8")), W, H)
+        boxes, dropped = sanitize(boxes, W, H)
+        lines = [f"{IDX[l]} {(x1 + x2) / 2 / W:.6f} {(y1 + y2) / 2 / H:.6f} {(x2 - x1) / W:.6f} {(y2 - y1) / H:.6f}" for l, x1, y1, x2, y2 in boxes]
+        (out / "labels" / (rp.stem + ".txt")).write_text("\n".join(lines), encoding="utf-8")
+        review_image(img, boxes, out / "review" / (rp.stem + ".jpg"))
+        if dropped:
+            with open(nr, "a", encoding="utf-8") as fh:
+                fh.write(f"{rp.stem}: dropped {len(dropped)} — " + ", ".join(dropped) + "\n")
+        tot_keep += len(boxes); tot_drop += len(dropped)
+    print(f"refiltered {len(raws)} images: kept {tot_keep} boxes, dropped {tot_drop} unsure")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default="data/learning/seed/foundry-ppe")
     ap.add_argument("--out", default="data/learning/foundry")
     ap.add_argument("--model", default="google/gemini-2.5-flash")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--prefix", default="", help="stem prefix, so several source folders can share one dataset")
+    ap.add_argument("--refilter", action="store_true", help="re-apply filters to saved raw answers (no API calls)")
     a = ap.parse_args()
+    out = (ROOT / a.out) if not os.path.isabs(a.out) else Path(a.out)
+    if a.refilter:
+        return refilter(out)
     key = load_key()
     src = (ROOT / a.src) if not os.path.isabs(a.src) else Path(a.src)
-    out = (ROOT / a.out) if not os.path.isabs(a.out) else Path(a.out)
     imgs = sorted([p for p in src.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
     if a.limit:
         imgs = imgs[:a.limit]
@@ -163,16 +242,24 @@ def main():
     for i, p in enumerate(imgs, 1):
         try:
             W, H = Image.open(p).size
+            stem = f"{a.prefix}{i:03d}_{re.sub(r'[^A-Za-z0-9_-]', '_', p.stem)[:40]}"
             items = ask_vlm(key, a.model, p)
-            lines, boxes = to_yolo(items, W, H)
-            stem = f"{i:03d}_{re.sub(r'[^A-Za-z0-9_-]', '_', p.stem)[:40]}"
+            (out / "raw").mkdir(parents=True, exist_ok=True)
+            (out / "raw" / (stem + ".json")).write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+            _, boxes = to_yolo(items, W, H)
+            boxes, dropped = sanitize(boxes, W, H)
+            lines = [f"{IDX[l]} {(x1 + x2) / 2 / W:.6f} {(y1 + y2) / 2 / H:.6f} {(x2 - x1) / W:.6f} {(y2 - y1) / H:.6f}" for l, x1, y1, x2, y2 in boxes]
             (out / "images" / (stem + ".jpg")).write_bytes(p.read_bytes())
             (out / "labels" / (stem + ".txt")).write_text("\n".join(lines), encoding="utf-8")
             review_image(p, boxes, out / "review" / (stem + ".jpg"))
+            if dropped:
+                with open(out / "needs_review.txt", "a", encoding="utf-8") as fh:
+                    fh.write(f"{stem}: dropped {len(dropped)} — " + ", ".join(dropped) + "\n")
             counts = {}
             for b in boxes:
                 counts[b[0]] = counts.get(b[0], 0) + 1
-            print(f"  [{i}/{len(imgs)}] {p.name}: " + (", ".join(f"{k}×{v}" for k, v in counts.items()) or "nothing"))
+            print(f"  [{i}/{len(imgs)}] {p.name}: " + (", ".join(f"{k}×{v}" for k, v in counts.items()) or "nothing")
+                  + (f"  (dropped {len(dropped)} unsure)" if dropped else ""))
             ok += 1
         except Exception as e:
             print(f"  [{i}/{len(imgs)}] {p.name}: ERROR {e}")
