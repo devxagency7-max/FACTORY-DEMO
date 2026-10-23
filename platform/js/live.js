@@ -1260,6 +1260,22 @@
     // Smart tiled PPE for distant workers: the full frame PLUS one rotating 60% tile — but only when a far/small person is
     // actually around and the device can keep up, so close/empty scenes stay fast. A far worker is near full-size inside the
     // tile (the model stops shrinking them to a few pixels), so their PPE reads reliably. Results merged + de-duped by NMS.
+    // a tile only ADDS what the full frame can't see (far, small people): anything cut by an inner tile edge is a partial
+    // body, and a tile person lying inside a person the full frame already found is the same worker — keeping either made
+    // phantom half-people that no apron/vest box matched → false "no vest" on a correctly dressed worker
+    function mergeTiles(fullDets, cache, tiles, d) {
+      var out = fullDets.slice(), m = 4, fullPeople = fullDets.filter(function (x) { return x.label === 'person'; });
+      (cache || []).forEach(function (e) {
+        var tb = tiles[e.i]; if (!tb) return;
+        e.dets.forEach(function (x) {
+          var cut = (tb.x1 > 0 && x.x1 <= tb.x1 + m) || (tb.y1 > 0 && x.y1 <= tb.y1 + m) || (tb.x2 < d.w && x.x2 >= tb.x2 - m) || (tb.y2 < d.h && x.y2 >= tb.y2 - m);
+          if (cut) return;
+          if (x.label === 'person' && fullPeople.some(function (p) { return AI.ioa(x, p) > 0.6; })) return;
+          out.push(x);
+        });
+      });
+      return AI.nms(out, 0.55, true);
+    }
     function ppeTiles(d) {
       var tw = Math.round(d.w * 0.6), th = Math.round(d.h * 0.6);
       return [{ x1: 0, y1: 0, x2: tw, y2: th }, { x1: d.w - tw, y1: 0, x2: d.w, y2: th }, { x1: 0, y1: d.h - th, x2: tw, y2: d.h }, { x1: d.w - tw, y1: d.h - th, x2: d.w, y2: d.h }];
@@ -1291,8 +1307,7 @@
       return Promise.all([full, AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5, crop: tiles[i] })]).then(function (r) {
         st.ppeTileCache = (st.ppeTileCache || []).filter(function (e) { return e.i !== i && now - e.t < 1500; });
         st.ppeTileCache.push({ i: i, t: now, dets: r[1] });
-        var merged = r[0].slice(); st.ppeTileCache.forEach(function (e) { merged = merged.concat(e.dets); });
-        return AI.nms(merged, 0.55, true);
+        return mergeTiles(r[0], st.ppeTileCache, tiles, d);
       });
     }
     // same smart tiling for the pose model, so a far person's body/keypoints read well enough for fall/SOS at distance
@@ -1303,8 +1318,7 @@
       return Promise.all([full, AI.run('pose', st.src, { conf: 0.4, iou: 0.5, maxDet: 10, crop: tiles[i] })]).then(function (r) {
         st.poseTileCache = (st.poseTileCache || []).filter(function (e) { return e.i !== i && now - e.t < 1500; });
         st.poseTileCache.push({ i: i, t: now, dets: r[1] });
-        var merged = r[0].slice(); st.poseTileCache.forEach(function (e) { merged = merged.concat(e.dets); });
-        return AI.nms(merged, 0.55, true).slice(0, 10);
+        return mergeTiles(r[0], st.poseTileCache, tiles, d).slice(0, 10);
       });
     }
     function infer(d) {
