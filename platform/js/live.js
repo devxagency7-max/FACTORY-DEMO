@@ -1238,6 +1238,18 @@
         return AI.nms(merged, 0.55, true);
       });
     }
+    // same smart tiling for the pose model, so a far person's body/keypoints read well enough for fall/SOS at distance
+    function poseDetect(d, now) {
+      var full = AI.run('pose', st.src, { conf: 0.4, iou: 0.5, maxDet: 10 });
+      if (!(LAB.distance && d.w >= 800 && (st.inferEMA || 0) < 260 && st.farPose)) { st.poseTileCache = null; return full; }
+      var tiles = ppeTiles(d), i = (st.poseTi = ((st.poseTi || 0) + 1)) % tiles.length;
+      return Promise.all([full, AI.run('pose', st.src, { conf: 0.4, iou: 0.5, maxDet: 10, crop: tiles[i] })]).then(function (r) {
+        st.poseTileCache = (st.poseTileCache || []).filter(function (e) { return e.i !== i && now - e.t < 1500; });
+        st.poseTileCache.push({ i: i, t: now, dets: r[1] });
+        var merged = r[0].slice(); st.poseTileCache.forEach(function (e) { merged = merged.concat(e.dets); });
+        return AI.nms(merged, 0.55, true).slice(0, 10);
+      });
+    }
     function infer(d) {
       var t0 = performance.now(), now = Date.now();
       // first ~1.5s after start: run only the lightest model so the GPU settles and the opening is smooth
@@ -1261,7 +1273,7 @@
         if (!titan) throw e;
         serverErr(e);
       }));
-      if (doPose && AI.loaded('pose')) jobs.push(AI.run('pose', st.src, { conf: 0.4, iou: 0.5, maxDet: 10 }).then(function (poses) { st.pose = { poses: poses, t: now }; behaviour(poses, d, now); }));
+      if (doPose && AI.loaded('pose')) jobs.push(poseDetect(d, now).then(function (poses) { st.pose = { poses: poses, t: now }; st.farPose = poses.some(function (p) { var bh = p.y2 - p.y1; return bh < d.h * 0.4 && bh > d.h * 0.04; }); behaviour(poses, d, now); }));
       return Promise.all(jobs).then(function () {
         var dt = performance.now() - t0; st.ms = Math.round(dt); st.frames++;
         st.inferEMA = st.inferEMA ? st.inferEMA * 0.85 + dt * 0.15 : dt; // smoothed inference time → drives the adaptive schedule + rate cap
