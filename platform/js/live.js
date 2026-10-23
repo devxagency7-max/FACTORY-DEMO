@@ -1280,6 +1280,21 @@
       watermark(g, W, H, title);
       return c.toDataURL('image/jpeg', 0.84);
     }
+    // ---- learning notebook: the RAW frame (no overlays) + detection boxes behind an alarm, so scripts/learn.py can
+    // use the supervisor's confirm / "false alarm" as a training label. Browser models only — their classes match the
+    // trainable weights; the Python (titan) engine collects its own.
+    function rawFrameURL(d) {
+      try { var c = document.createElement('canvas'); c.width = d.w; c.height = d.h; c.getContext('2d').drawImage(st.src, 0, 0, d.w, d.h); return c.toDataURL('image/jpeg', 0.85); } catch (e) { return null; }
+    }
+    function learnDets(dets) {
+      return (dets || []).filter(function (x) { return x && x.label && (x.x2 - x.x1) > 1 && (x.y2 - x.y1) > 1; })
+        .map(function (x) { return { label: x.label, box: [Math.round(x.x1), Math.round(x.y1), Math.round(x.x2), Math.round(x.y2)], score: Math.round((x.score || 0) * 1000) / 1000 }; });
+    }
+    function learnPayload(task, type, dets, d) {
+      if (ppeEng === 'titan') return undefined; // the server engine keeps its own notebook
+      var frame = rawFrameURL(d); if (!frame) return undefined;
+      return { task: task, type: type, dets: learnDets(dets), size: [d.w, d.h], frame: frame };
+    }
     var workerCool = {};
     function reportPPE(track, items, d) {
       var wid = resolveWorker(track);
@@ -1306,7 +1321,8 @@
       stage.classList.remove('is-alert'); void stage.offsetWidth; stage.classList.add('is-alert');
       if (LAB.sound) beep();
       workerInfo(wid).then(function (w) {
-        var posts = items.map(function (k) { return API.post('events', { type: PPE_TYPES[k], workerId: wid, cameraId: camId(), conf: Math.round(conf * 100) / 100, source: 'live-ai', incident: incident, missing: items, durationSec: Math.round((Date.now() - (track.since[k] || Date.now())) / 1000) + 1, evidence: { kind: 'live', image: imgUrl, model: ppeEng === 'titan' ? 'TITAN-PPE ppe_hf.onnx' : 'YOLOv8s-SH17' } }); });
+        var learn = learnPayload('ppe', PPE_TYPES[items[0]], st.last && st.last.dets, d); // raw frame + boxes, once per incident
+        var posts = items.map(function (k, i) { return API.post('events', { type: PPE_TYPES[k], workerId: wid, cameraId: camId(), conf: Math.round(conf * 100) / 100, source: 'live-ai', incident: incident, missing: items, durationSec: Math.round((Date.now() - (track.since[k] || Date.now())) / 1000) + 1, evidence: { kind: 'live', image: imgUrl, model: ppeEng === 'titan' ? 'TITAN-PPE ppe_hf.onnx' : 'YOLOv8s-SH17' }, learn: i === 0 ? learn : undefined }); });
         return Promise.all(posts).then(function (evs) {
           U.toast('كشف بانتظار مراجعة المشرف' + (w ? ' · ' + w.name + '؟' : ''), items.map(function (k) { return 'بدون ' + PPE_AR[k]; }).join(' · ') + ' · ' + (evs[0] ? evs[0].id : ''), { kind: 'live', img: imgUrl, action: evs[0] ? ['مراجعة', function () { U.openEvent(evs[0]); }] : null, ms: 7000 });
         });
@@ -1404,7 +1420,7 @@
       st.captures.unshift({ img: imgUrl, title: 'إنذار ' + R.ar + ' · ' + U.fTime(Date.now()) }); renderCaptures();
       stage.classList.remove('is-alert'); void stage.offsetWidth; stage.classList.add('is-alert');
       var wid = k === 'smoking' ? resolveWorker(trackFor(best)) : null;
-      var body = { type: R.type, workerId: wid, cameraId: camId(), conf: best ? Math.round(best.score * 100) / 100 : 0.9, source: 'live-' + (k === 'smoking' ? 'smoking' : 'fire'), sev: R.sev, evidence: { kind: 'live', image: imgUrl, model: (ppeEng === 'titan' ? 'EGIC AI · ' : '') + (k === 'smoking' && ppeEng === 'titan' ? 'Ensemble YOLOv8 + YOLO11m' : R.model) }, note: k === 'smoking' ? 'رُصد تدخين (' + dets.map(function (x) { return SMOKING_LABELS[x.label]; }).filter(Boolean).join('، ') + ') في منطقة يُمنع فيها التدخين' : 'رصد ' + R.ar + ' مؤكد عبر ' + R.need + ' إطارات متتالية' };
+      var body = { type: R.type, workerId: wid, cameraId: camId(), conf: best ? Math.round(best.score * 100) / 100 : 0.9, source: 'live-' + (k === 'smoking' ? 'smoking' : 'fire'), sev: R.sev, evidence: { kind: 'live', image: imgUrl, model: (ppeEng === 'titan' ? 'EGIC AI · ' : '') + (k === 'smoking' && ppeEng === 'titan' ? 'Ensemble YOLOv8 + YOLO11m' : R.model) }, note: k === 'smoking' ? 'رُصد تدخين (' + dets.map(function (x) { return SMOKING_LABELS[x.label]; }).filter(Boolean).join('، ') + ') في منطقة يُمنع فيها التدخين' : 'رصد ' + R.ar + ' مؤكد عبر ' + R.need + ' إطارات متتالية', learn: learnPayload(k === 'smoking' ? 'smoking' : 'fire', R.type, dets, d) };
       var fallback = { type: R.type, ts: Date.now(), conf: body.conf, sev: R.sev, cameraId: body.cameraId, evidence: { model: body.evidence.model }, incident: 'HZ-' + Date.now().toString(36) };
       API.post('events', body).then(function (ev) {
         if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: imgUrl });

@@ -86,6 +86,21 @@ function journal(kind, payload) {
   try { fs.appendFileSync(REGISTRY_KINDS.has(kind) ? REGISTRY : JOURNAL, JSON.stringify({ kind, ts: Date.now(), payload }) + '\n'); } catch (e) { /* non-fatal */ }
 }
 
+// The learning notebook for the browser models: save the RAW frame + its detection boxes behind an alarm, keyed by the
+// event id. scripts/learn.py pairs it with the supervisor's confirm / "false alarm" (REVIEWS_FILE) to train a student.
+const LEARN_EVENTS_DIR = path.join(DATA, 'learning', 'events');
+function saveLearnEvent(id, learn) {
+  try {
+    if (!id || !learn || !learn.task) return;
+    const m = /^data:image\/(jpeg|png|webp);base64,(.+)$/.exec(learn.frame || '');
+    if (!m) return;
+    fs.mkdirSync(LEARN_EVENTS_DIR, { recursive: true });
+    const safe = String(id).replace(/[^A-Za-z0-9_.-]/g, '_');
+    fs.writeFileSync(path.join(LEARN_EVENTS_DIR, safe + '.jpg'), Buffer.from(m[2], 'base64'));
+    fs.writeFileSync(path.join(LEARN_EVENTS_DIR, safe + '.json'), JSON.stringify({ id, task: learn.task, type: learn.type || null, size: learn.size || null, dets: learn.dets || [], ts: Date.now() }));
+  } catch (e) { /* non-fatal */ }
+}
+
 function readJournal(file) { return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []; }
 function replayJournal() {
   const quiet = engine.listeners; engine.listeners = [];
@@ -573,6 +588,8 @@ async function api(req, res, pathname, query) {
       const f = saveDataUrl(body.evidence.image, 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7));
       if (f) body.evidence = Object.assign({}, body.evidence, { image: f });
     }
+    // keep the big raw training frame out of the journal/engine; it is saved to the learning notebook after the id is known
+    if (pathname === '/api/v1/events' && body.learn) { req._learn = body.learn; delete body.learn; }
     if (pathname === '/api/v1/gate/log') {
       if (body.image) body.image = saveDataUrl(body.image, 'veh_' + Date.now()) || null;
       if (body.plateImage) body.plateImage = saveDataUrl(body.plateImage, 'plate_' + Date.now()) || null;
@@ -594,9 +611,11 @@ async function api(req, res, pathname, query) {
   if (req.method === 'POST' && out.status === 200) {
     const j = engine.journalEntry(pathname, body, out.body);
     if (j) journal(j[0], j[1]);
-    // the supervisor's decision on an engine detection = the ground truth the AI student learns from
-    if (/^\/api\/v1\/events\/[^/]+\/action$/.test(pathname) && out.body && out.body.source === 'ai-engine' && out.body.incident) {
-      try { fs.appendFileSync(REVIEWS_FILE, JSON.stringify({ incident: out.body.incident, type: out.body.type, review: out.body.review, status: out.body.status, reviewer: out.body.reviewer || null, ts: Date.now() }) + '\n'); } catch (e) { /* non-fatal */ }
+    // save the raw frame behind a live alarm into the learning notebook, keyed by the event id
+    if (pathname === '/api/v1/events' && out.body && req._learn) saveLearnEvent(out.body.incident || out.body.id, req._learn);
+    // the supervisor's decision on an AI detection (engine OR live lab) = the ground truth the AI student learns from
+    if (/^\/api\/v1\/events\/[^/]+\/action$/.test(pathname) && out.body && /^(ai-engine|live-)/.test(out.body.source || '') && (out.body.incident || out.body.id)) {
+      try { fs.appendFileSync(REVIEWS_FILE, JSON.stringify({ incident: out.body.incident || out.body.id, type: out.body.type, review: out.body.review, status: out.body.status, reviewer: out.body.reviewer || null, ts: Date.now() }) + '\n'); } catch (e) { /* non-fatal */ }
     }
   }
   send(res, out.status, out.body, { 'Server-Timing': 'engine;dur=' + (Date.now() - t0) });
