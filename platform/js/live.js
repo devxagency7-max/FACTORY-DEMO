@@ -806,58 +806,76 @@
     var loading = h('div', { class: 'lab-loading hidden' }, h('div', { class: 'box' }, h('div', { class: 'spinner' }), h('div', { style: { marginTop: '14px', fontWeight: 600 }, id: 'ldT', text: 'تحميل النماذج…' }), h('div', { class: 'bar' }, h('i', { id: 'ldBar' })), h('div', { class: 'muted mono', style: { fontSize: '11px' }, id: 'ldS', text: '' })));
     var stage = h('div', { class: 'lab-stage' }, canvas, video, img, phoneImg, phoneVid, h('div', { class: 'lab-hud' }, hudL, hudR), h('div', { class: 'lab-brand' }, h('div', { class: 'powered' }, h('span', { class: 'dot' }), 'POWERED BY ', h('b', { text: 'DELMON' }), h('span', { class: 'amp', text: '&' }), h('b', { text: 'DEV SMART X' }))), empty, loading);
     // second lens / camera with its OWN light AI pipeline (PPE + fall), drawn beside the main one
-    var secondCanvas = h('canvas', { width: 640, height: 360, style: { width: '100%', display: 'block', borderRadius: '12px', background: '#020403', aspectRatio: '16 / 9' } });
-    var secondSrc = h('img', { alt: '', style: { position: 'absolute', width: '1px', height: '1px', opacity: 0, pointerEvents: 'none' } });
-    var secondLabel = h('div', { style: { position: 'absolute', top: '8px', insetInlineStart: '8px', background: 'rgba(0,0,0,.55)', color: '#fff', padding: '4px 10px', borderRadius: '8px', fontSize: '12px' }, text: '' });
-    var secondHud = h('div', { style: { position: 'absolute', top: '8px', insetInlineEnd: '92px', background: 'rgba(0,0,0,.5)', color: '#fff', padding: '3px 8px', borderRadius: '7px', fontSize: '11px' }, text: '' });
-    var secondWrap = h('div', { style: { position: 'relative', flex: '1 1 0', minWidth: '0', display: 'none' } }, secondCanvas, secondSrc, secondLabel, secondHud, h('button', { class: 'btn btn--xs', style: { position: 'absolute', top: '8px', insetInlineEnd: '8px' }, onclick: function () { hideSecond(); }, text: '✕ إغلاق' }));
-    var stageRow = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start' } }, h('div', { style: { flex: '1 1 0', minWidth: '0' } }, stage), secondWrap);
-    var left = h('div', null, stageRow);
-    var st2 = null, secondCool = {};
-    function hideSecond() { if (st2) st2.running = false; st2 = null; secondSrc.removeAttribute('src'); secondWrap.style.display = 'none'; }
-    function showSecond(cam) {
-      hideSecond();
-      secondLabel.textContent = '📷 ' + cam.name + ' · AI';
-      secondSrc.crossOrigin = 'anonymous';
-      secondSrc.src = (API.state.base || '') + '/api/v1/ipcams/' + cam.id + '/mjpeg?t=' + (+new Date());
-      secondWrap.style.display = '';
-      st2 = { cam: cam, running: true, busy: false, tracker: null, last: null, lastInfer: 0, pfallSince: 0, fallCool: 0, ms: 0, frame: document.createElement('canvas') };
-      loop2();
+    // Video wall: extra camera/lens feeds beside the main one, each with its OWN light AI (PPE · fall · fire · smoke).
+    // Only ONE feed infers at a time (shared GPU), round-robin — adding feeds slows the cadence but never stalls the wall.
+    var feedGrid = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' } });
+    var stageRow = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start' } }, h('div', { style: { flex: '1 1 0', minWidth: '0' } }, stage));
+    var left = h('div', null, stageRow, feedGrid);
+    var feeds = [], feedTurn = 0, feedsRaf = 0;
+    function anyAiBusy() { return st.busy || feeds.some(function (f) { return f.st.busy; }); }
+    function addFeed(cam) {
+      if (feeds.some(function (f) { return f.cam.id === cam.id; })) { U.toast('الكاميرا دي معروضة بالفعل', cam.name); return; }
+      var canvas = h('canvas', { width: 640, height: 360, style: { width: '100%', display: 'block', borderRadius: '10px', background: '#020403', aspectRatio: '16 / 9' } });
+      var srcImg = h('img', { crossOrigin: 'anonymous', alt: '', style: { position: 'absolute', width: '1px', height: '1px', opacity: 0, pointerEvents: 'none' } });
+      var lbl = h('div', { style: { position: 'absolute', top: '8px', insetInlineStart: '8px', background: 'rgba(0,0,0,.55)', color: '#fff', padding: '4px 10px', borderRadius: '8px', fontSize: '12px' } }, '📷 ' + cam.name + ' · AI');
+      var hud = h('div', { style: { position: 'absolute', top: '8px', insetInlineEnd: '44px', background: 'rgba(0,0,0,.5)', color: '#fff', padding: '3px 8px', borderRadius: '7px', fontSize: '11px' }, text: '…' });
+      var f = { cam: cam, canvas: canvas, srcImg: srcImg, hud: hud, hz: { fire: [], smoke: [], smoking: [], cool: {} }, cool: {}, st: { busy: false, tracker: null, last: null, lastInfer: 0, flip: 0, pfallSince: 0, fallCool: 0, ms: 0, frame: document.createElement('canvas') } };
+      var closeBtn = h('button', { class: 'btn btn--xs', style: { position: 'absolute', top: '8px', insetInlineEnd: '8px' }, text: '✕', onclick: function () { removeFeed(f); } });
+      f.wrap = h('div', { style: { position: 'relative', flex: '1 1 calc(50% - 8px)', minWidth: '260px' } }, canvas, srcImg, lbl, hud, closeBtn);
+      srcImg.src = (API.state.base || '') + '/api/v1/ipcams/' + cam.id + '/mjpeg?t=' + (+new Date());
+      feeds.push(f); feedGrid.appendChild(f.wrap);
+      if (!feedsRaf) feedsRaf = requestAnimationFrame(feedsLoop);
     }
-    function second2canvas() {
-      var w = secondSrc.naturalWidth, hh = secondSrc.naturalHeight; if (!w || !hh) return null;
-      var c = st2.frame; if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; } c.getContext('2d').drawImage(secondSrc, 0, 0, w, hh); return c;
+    function removeFeed(f) {
+      var i = feeds.indexOf(f); if (i < 0) return; feeds.splice(i, 1);
+      try { f.srcImg.removeAttribute('src'); } catch (e) { } if (f.wrap.parentNode) f.wrap.remove();
+      if (!feeds.length && feedsRaf) { cancelAnimationFrame(feedsRaf); feedsRaf = 0; }
     }
-    function loop2() {
-      if (!st2 || !st2.running) return;
-      var now = performance.now(), frame = second2canvas();
-      if (frame) {
-        var dw = frame.width, dh = frame.height;
-        if (secondCanvas.width !== dw || secondCanvas.height !== dh) { secondCanvas.width = dw; secondCanvas.height = dh; }
-        var g = secondCanvas.getContext('2d'); g.drawImage(frame, 0, 0, dw, dh);
-        // PPE inference — serialized with the main pipeline (one GPU), capped so neither lens starves
-        if (!st.busy && !st2.busy && prepP && AI && AI.loaded('ppe') && now - st2.lastInfer >= Math.max(450, (st.inferEMA || 150) * 2)) {
-          st2.busy = true; st2.lastInfer = now; var t0 = performance.now();
-          AI.run('ppe', frame, { conf: AI.PPE_CONF, iou: 0.5 }).then(function (dets) {
-            if (!st2) return;
-            if (!st2.tracker) st2.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: 25000 });
-            var people = AI.analyzePPE(dets, dw, dh);
-            var vio = st2.tracker.update(people, Date.now());
-            st2.last = { tracks: st2.tracker.tracks.slice(), t: Date.now() };
-            vio.forEach(function (x) { reportSecond(x.track, x.items, dw, dh); });
-            secondFall(people, dw, dh, Date.now());
-            st2.ms = Math.round(performance.now() - t0);
-          }).catch(function () { }).then(function () { if (st2) st2.busy = false; });
-        }
-        if (st2 && st2.last && Date.now() - st2.last.t < 2500) drawSecondOverlay(g, dw, dh);
-        secondHud.textContent = (st2 ? st2.ms : 0) + ' ms';
+    function feedFrame(f) {
+      var w = f.srcImg.naturalWidth, hh = f.srcImg.naturalHeight; if (!w || !hh) return null;
+      var c = f.st.frame; if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; } c.getContext('2d').drawImage(f.srcImg, 0, 0, w, hh); return c;
+    }
+    function feedsLoop() {
+      if (st.destroyed || !feeds.length) { feeds.slice().forEach(removeFeed); feedsRaf = 0; return; }
+      var now = performance.now();
+      feeds.forEach(function (f) {
+        var frame = feedFrame(f); f._frame = frame || f._frame; if (!frame) return;
+        var dw = frame.width, dh = frame.height; f._d = { w: dw, h: dh };
+        if (f.canvas.width !== dw || f.canvas.height !== dh) { f.canvas.width = dw; f.canvas.height = dh; }
+        f.canvas.getContext('2d').drawImage(frame, 0, 0, dw, dh);
+        if (f.st.last && Date.now() - f.st.last.t < 2500) drawFeedOverlay(f, dw, dh);
+        f.hud.textContent = f.st.ms + ' ms';
+      });
+      if (!anyAiBusy() && prepP && AI) {
+        var n = feeds.length, cadence = Math.max(450, (st.inferEMA || 150) * 1.6);
+        for (var i = 0; i < n; i++) { var f = feeds[(feedTurn + i) % n]; if (f._frame && now - f.st.lastInfer >= cadence) { feedTurn = (feedTurn + i + 1) % n; inferFeed(f, now); break; } }
       }
-      requestAnimationFrame(loop2);
+      feedsRaf = requestAnimationFrame(feedsLoop);
     }
-    function drawSecondOverlay(g, dw, dh) {
-      var fs = Math.max(12, Math.round(dw / 60)), lw = Math.max(2, dw / 420), req = reqKeys();
-      st2.last.tracks.forEach(function (t) {
-        if (t.seen !== st2.last.t) return;
+    function inferFeed(f, now) {
+      var frame = f._frame, d = f._d; if (!frame || !d) return;
+      // rotate the model per inference so each feed covers PPE + fire + smoking over time without stalling the shared GPU
+      var tasks = []; if (hasPPE() && AI.loaded('ppe')) tasks.push('ppe'); if (hasFire() && AI.loaded('fire')) tasks.push('fire'); if (hasSmoking() && AI.loaded('smoking')) tasks.push('smoking');
+      if (!tasks.length) return;
+      f.st.busy = true; f.st.lastInfer = now; var t0 = performance.now();
+      var task = tasks[f.st.flip++ % tasks.length], job;
+      if (task === 'ppe') job = AI.run('ppe', frame, { conf: AI.PPE_CONF, iou: 0.5 }).then(function (dets) {
+        if (feeds.indexOf(f) < 0) return;
+        if (!f.st.tracker) f.st.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: 25000 });
+        var people = AI.analyzePPE(dets, d.w, d.h);
+        var vio = f.st.tracker.update(people, Date.now());
+        f.st.last = { tracks: f.st.tracker.tracks.slice(), t: Date.now() };
+        vio.forEach(function (x) { feedReportPPE(f, x.track, x.items, d); });
+        feedFall(f, people, d, Date.now());
+      });
+      else if (task === 'fire') job = AI.run('fire', frame, { conf: { fire: 0.25, smoke: 0.4 }, iou: 0.45 }).then(function (dets) { feedHazard(f, 'fire', dets, d); });
+      else job = AI.run('smoking', frame, { conf: { cigarette: 0.45, vape: 0.45, smoke: 0.45, person: 0.4 }, iou: 0.5 }).then(function (dets) { feedHazard(f, 'smoking', dets, d); });
+      job.catch(function () { }).then(function () { f.st.ms = Math.round(performance.now() - t0); f.st.busy = false; });
+    }
+    function drawFeedOverlay(f, dw, dh) {
+      var g = f.canvas.getContext('2d'), fs = Math.max(12, Math.round(dw / 60)), lw = Math.max(2, dw / 420), req = reqKeys();
+      f.st.last.tracks.forEach(function (t) {
+        if (t.seen !== f.st.last.t) return;
         var missing = req.filter(function (k) { return t.stable && t.stable[k] === 'MISSING'; });
         var ok = req.every(function (k) { return t.stable && t.stable[k] === 'OK'; });
         corners(g, t.box, missing.length ? COL.bad : ok ? COL.ok : COL.warn, lw);
@@ -865,31 +883,45 @@
         label(g, t.box.x1, t.box.y1, missing.length ? 'مخالفة' : ok ? 'ملتزم' : 'شخص', missing.length ? 'rgba(150,16,16,.94)' : ok ? 'rgba(10,90,50,.9)' : 'rgba(120,90,10,.9)', fs);
       });
     }
-    function reportSecond(track, items, dw, dh) {
-      if (!st2) return;
+    function feedReportPPE(f, track, items, d) {
       var tnow = Date.now(), key = 'u' + Math.round(((track.box.x1 + track.box.x2) / 2) / 140) + '_' + Math.round(((track.box.y1 + track.box.y2) / 2) / 140);
-      items = items.filter(function (k) { var kk = st2.cam.id + ':' + key + ':' + k; if (secondCool[kk] && tnow - secondCool[kk] < 45000) return false; secondCool[kk] = tnow; return true; });
+      items = items.filter(function (k) { var kk = key + ':' + k; if (f.cool[kk] && tnow - f.cool[kk] < 45000) return false; f.cool[kk] = tnow; return true; });
       if (!items.length) return;
-      var snap = secondCanvas.toDataURL('image/jpeg', 0.8);
-      items.forEach(function (k) { API.post('events', { type: PPE_TYPES[k], cameraId: st2.cam.id, conf: 0.85, source: 'live-ai', evidence: { kind: 'live', image: snap, model: 'YOLOv8s-SH17' } }).catch(function () { }); });
-      secondWrap.classList.remove('is-alert'); void secondWrap.offsetWidth; secondWrap.classList.add('is-alert');
+      var snap = f.canvas.toDataURL('image/jpeg', 0.8);
+      items.forEach(function (k) { API.post('events', { type: PPE_TYPES[k], cameraId: f.cam.id, conf: 0.85, source: 'live-ai', evidence: { kind: 'live', image: snap, model: 'YOLOv8s-SH17' } }).catch(function () { }); });
+      f.wrap.classList.remove('is-alert'); void f.wrap.offsetWidth; f.wrap.classList.add('is-alert');
     }
-    function secondFall(people, dw, dh, now) {
-      if (!st2) return;
-      var down = (people || []).filter(function (p) { var b = p.box; return b.y1 >= dh * 0.02 && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > dh * 0.09 && b.y2 > dh * 0.55; });
-      if (down.length) { if (!st2.pfallSince) st2.pfallSince = now; } else st2.pfallSince = 0;
-      if (st2.pfallSince && now - st2.pfallSince > 2500 && now - st2.fallCool > 30000) {
-        st2.fallCool = now; var snap = secondCanvas.toDataURL('image/jpeg', 0.8);
-        API.post('events', { type: 'FALL', cameraId: st2.cam.id, conf: 0.9, source: 'live-pose', sev: 'CRITICAL', evidence: { kind: 'live', image: snap, model: 'Fall (person box)' }, note: 'شخص في وضع أفقي على الأرض' }).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: snap }); }).catch(function () { });
+    function feedFall(f, people, d, now) {
+      var down = (people || []).filter(function (p) { var b = p.box; return b.y1 >= d.h * 0.02 && !b.synthetic && (b.x2 - b.x1) > (b.y2 - b.y1) * 1.4 && (b.y2 - b.y1) > d.h * 0.09 && b.y2 > d.h * 0.55; });
+      if (down.length) { if (!f.st.pfallSince) f.st.pfallSince = now; } else f.st.pfallSince = 0;
+      if (f.st.pfallSince && now - f.st.pfallSince > 2500 && now - f.st.fallCool > 30000) {
+        f.st.fallCool = now; var snap = f.canvas.toDataURL('image/jpeg', 0.8);
+        f.wrap.classList.remove('is-alert'); void f.wrap.offsetWidth; f.wrap.classList.add('is-alert');
+        API.post('events', { type: 'FALL', cameraId: f.cam.id, conf: 0.9, source: 'live-pose', sev: 'CRITICAL', evidence: { kind: 'live', image: snap, model: 'Fall (person box)' }, note: 'شخص في وضع أفقي على الأرض' }).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: snap }); }).catch(function () { });
       }
+    }
+    function feedHazard(f, kind, dets, d) {
+      var now = Date.now();
+      var groups = kind === 'fire'
+        ? { fire: dets.filter(function (x) { return x.label === 'fire'; }), smoke: dets.filter(function (x) { return x.label === 'smoke'; }) }
+        : { smoking: plausibleCigarettes(dets, d) };
+      Object.keys(groups).forEach(function (k) {
+        var R = HZ_RULE[k], buf = (f.hz[k] = f.hz[k] || []); buf.push(groups[k].length ? 1 : 0); if (buf.length > R.win) buf.shift();
+        var hits = buf.filter(Boolean).length;
+        if (groups[k].length && hits >= R.need && (!f.hz.cool[k] || now - f.hz.cool[k] > R.cool)) {
+          f.hz.cool[k] = now; var snap = f.canvas.toDataURL('image/jpeg', 0.8);
+          f.wrap.classList.remove('is-alert'); void f.wrap.offsetWidth; f.wrap.classList.add('is-alert');
+          API.post('events', { type: R.type, cameraId: f.cam.id, conf: 0.9, source: 'live-' + (k === 'smoking' ? 'smoking' : 'fire'), sev: R.sev, evidence: { kind: 'live', image: snap, model: R.model }, note: k === 'smoking' ? 'رُصد تدخين' : 'رصد ' + R.ar }).then(function (ev) { if (window.EGICAlarm) window.EGICAlarm.show(ev, { img: snap }); }).catch(function () { });
+        }
+      });
     }
     function pickSecondCam() {
       fetch((API.state.base || '') + '/api/v1/ipcams', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
-        var others = (j.items || []).filter(function (c) { return !(st.ipcam && c.id === st.ipcam.id); });
-        if (!others.length) { U.toast('مفيش كاميرا/عدسة تانية', 'ضيف كاميرا IP تانية الأول من «🌐 كاميرا IP»', { kind: 'critical', ms: 7000 }); return; }
-        if (others.length === 1) { showSecond(others[0]); return; }
-        var box = h('div', { style: { display: 'grid', gap: '8px' } }, others.map(function (c) { return h('button', { class: 'btn', onclick: function () { U.closeModal(); showSecond(c); } }, '📷 ' + c.name); }));
-        U.openModal('اختر العدسة / الكاميرا الثانية', box);
+        var others = (j.items || []).filter(function (c) { return !(st.ipcam && c.id === st.ipcam.id) && !feeds.some(function (f) { return f.cam.id === c.id; }); });
+        if (!others.length) { U.toast('مفيش كاميرا/عدسة تانية متاحة', 'ضيف كاميرا IP الأول من «🌐 كاميرا IP» (كل عدسة ليها رابط)', { kind: 'critical', ms: 7000 }); return; }
+        if (others.length === 1) { addFeed(others[0]); return; }
+        var box = h('div', { style: { display: 'grid', gap: '8px' } }, others.map(function (c) { return h('button', { class: 'btn', onclick: function () { U.closeModal(); addFeed(c); } }, '📷 ' + c.name); }));
+        U.openModal('ضيف كاميرا / عدسة للشاشة المقسّمة', box);
       }).catch(function () { U.toast('تعذر جلب الكاميرات', '', { kind: 'critical' }); });
     }
     U.onCleanup(hideSecond);
@@ -897,7 +929,7 @@
     listCams().then(function (ds) { ds.forEach(function (d, i) { camSel.appendChild(h('option', { value: d.deviceId, text: d.label || ('كاميرا ' + (i + 1)) })); }); });
     var stopBtn = h('button', { class: 'btn', onclick: stop }, U.icon('stop'), 'إيقاف');
     var controls = h('div', { class: 'lab-controls' },
-      h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('button', { class: 'btn', onclick: pickSecondCam, title: 'اعرض العدسة/الكاميرا التانية جنب دي' }, '📷 عدسة ثانية'), stopBtn, camSel,
+      h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('button', { class: 'btn', onclick: pickSecondCam, title: 'ضيف كاميرا/عدسة للشاشة المقسّمة — كل واحدة بتشتغل بالـAI' }, '➕ عدسة / كاميرا'), stopBtn, camSel,
       h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.mirror, onchange: function (e) { LAB.mirror = e.target.checked; saveLab(); } }), 'عكس الصورة'),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.sound, onchange: function (e) { LAB.sound = e.target.checked; saveLab(); } }), 'تنبيه صوتي'),
