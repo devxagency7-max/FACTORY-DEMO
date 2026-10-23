@@ -949,7 +949,7 @@
       API.get('workers', { limit: 1000 }).then(function (r) { r.items.forEach(function (w) { var o = h('option', { value: w.id, text: w.name + ' · ' + w.id }); if (w.id === LAB.profileId) o.selected = true; profSel.appendChild(o); }); });
       profSel.addEventListener('change', function () { LAB.profileId = profSel.value || null; saveLab(); });
       profSel.style.display = LAB.idMode === 'fixed' || !hasFaces() ? '' : 'none';
-      c1.body.appendChild(h('div', { style: { display: 'grid', gap: '10px' } }, idCard, h('div', { id: 'idRoster', style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } }), idSel, profSel, h('div', { class: 'muted', style: { fontSize: '11.5px' }, id: 'idHint', text: hasFaces() ? 'موظفون ببصمة وجه: ' + Object.keys(FACES).length + ' — أي وجه يتعرف عليه بيتسجل حضوره تلقائيًا.' : 'لا توجد بصمات وجه مسجلة بعد — سجّل وجوه الموظفين من «تسجيل وجه» أو من ملف الموظف.' })));
+      c1.body.appendChild(h('div', { style: { display: 'grid', gap: '10px' } }, idCard, h('div', { id: 'idRoster', style: { display: 'grid', gap: '6px' } }), idSel, profSel, h('div', { class: 'muted', style: { fontSize: '11.5px' }, id: 'idHint', text: hasFaces() ? 'موظفون ببصمة وجه: ' + Object.keys(FACES).length + ' — أي وجه يتعرف عليه بيتسجل حضوره تلقائيًا.' : 'لا توجد بصمات وجه مسجلة بعد — سجّل وجوه الموظفين من «تسجيل وجه» أو من ملف الموظف.' })));
       side.appendChild(c1);
       // PPE checklist
       if (hasPPE()) {
@@ -1576,18 +1576,32 @@
         else if (primary) { nm.textContent = 'شخص غير معروف'; sb.textContent = 'سجّل الوجه لربطه بملف'; if (ph) ph.textContent = '?'; if (wid) workerInfo(wid); }
         else { nm.textContent = '—'; sb.textContent = 'بانتظار ظهور شخص'; }
       }
-      // roster: every person currently in frame + their identity (green = recognised, red = violation, grey = unknown)
+      // roster: everyone in frame right now — one clear row per person: name (or «غير معروف N») + what PPE they're missing
       var roster = document.getElementById('idRoster');
       if (roster && hasPPE()) {
         var tracks = L ? L.tracks.filter(function (t) { return t.seen === L.t; }) : [];
         clear(roster);
         var reqK = reqKeys();
-        tracks.slice(0, 16).forEach(function (t) {
-          var id = resolveWorker(t), ww = id ? workerCache[id] : null; if (id && !ww) workerInfo(id);
-          var miss = reqK.some(function (k) { return t.stable && t.stable[k] === 'MISSING'; });
-          var name = t.identity && workerCache[t.identity] ? workerCache[t.identity].name : ww ? ww.name : 'غير معروف';
-          roster.appendChild(h('span', { class: 'chip', style: { display: 'inline-flex', alignItems: 'center', gap: '5px', borderColor: miss ? 'var(--critical)' : t.identity ? 'var(--good)' : '' } }, h('span', { class: 'dot ' + (miss ? 'dot--off' : t.identity ? 'dot--on' : 'dot--idle') }), name));
-        });
+        if (!tracks.length) { roster.appendChild(h('div', { class: 'muted', style: { fontSize: '12px' }, text: 'مفيش عمال في الكادر دلوقتي.' })); }
+        else {
+          var nMiss = 0;
+          tracks.forEach(function (t) { if (reqK.some(function (k) { return t.stable && t.stable[k] === 'MISSING'; })) nMiss++; });
+          roster.appendChild(h('div', { style: { fontSize: '12px', fontWeight: '700', marginBottom: '2px' } }, 'العمال في الكادر: ' + tracks.length + (nMiss ? ' · ' : ''), nMiss ? h('span', { style: { color: 'var(--critical)' }, text: 'مخالفات: ' + nMiss }) : null));
+          var unk = 0;
+          tracks.slice(0, 16).forEach(function (t) {
+            var id = resolveWorker(t), ww = id ? workerCache[id] : null; if (id && !ww) workerInfo(id);
+            var missItems = reqK.filter(function (k) { return t.stable && t.stable[k] === 'MISSING'; }), miss = missItems.length > 0;
+            var named = t.identity && workerCache[t.identity] ? workerCache[t.identity].name : (ww ? ww.name : null);
+            var name = named || ('غير معروف ' + (++unk));
+            var col = miss ? 'var(--critical)' : named ? 'var(--good)' : 'var(--muted, #8aa)';
+            var statusText = miss ? ('ناقص: ' + missItems.map(function (k) { return PPE_AR[k]; }).join('، ')) : (named ? 'مستوفي المعدات ✓' : 'بيتأكد من الوش…');
+            roster.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '9px', background: 'rgba(255,255,255,.03)', border: '1px solid ' + (miss ? 'var(--critical)' : 'var(--line-2, #345)') } },
+              h('span', { style: { width: '9px', height: '9px', borderRadius: '50%', background: col, flex: 'none' } }),
+              h('div', { style: { minWidth: '0', flex: '1' } },
+                h('b', { style: { fontSize: '12.5px', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, text: name }),
+                h('small', { style: { fontSize: '11px', display: 'block', color: miss ? '#ff9b9b' : 'var(--muted,#8aa)' }, text: statusText }))));
+          });
+        }
       }
       if (hzList) {
         var setH = function (id, cls, text) { var r = document.getElementById('hz-' + id); if (!r) return; r.classList.toggle('is-ok', cls === 'ok'); r.classList.toggle('is-miss', cls === 'bad'); r.querySelector('.state-pill').textContent = text; };
