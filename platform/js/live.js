@@ -1284,12 +1284,14 @@
     // / work gloves it sees confidently is added as the SH17 class it proves (face-guard, safety-suit, gloves…), so a
     // correctly dressed foundry worker is no longer flagged. Only positive gear is added — it can clear a false alarm,
     // never create a violation.
-    var FOUNDRY_MIN = 0.45;
+    // the silver apron is big and distinctive but the model has few examples yet, so it scores lower — accept it from 0.30
+    var FOUNDRY_MIN = 0.45, FOUNDRY_MIN_BY = { 'thermal-apron': 0.30 };
     function foundryDets(src) {
       if (!AI.loaded('foundry')) return Promise.resolve([]);
-      return AI.run('foundry', src || st.src, { conf: FOUNDRY_MIN, iou: 0.5 }).then(function (dets) {
+      return AI.run('foundry', src || st.src, { conf: 0.25, iou: 0.5 }).then(function (dets) {
+        if (!src) st.foundryRaw = dets; // what the foundry model saw on the main view (shown in the PPE panel)
         var map = AI.FOUNDRY_AS_SH17, sh = AI.SH17;
-        return dets.filter(function (x) { return map[x.label]; }).map(function (x) {
+        return dets.filter(function (x) { return map[x.label] && x.score >= (FOUNDRY_MIN_BY[x.label] || FOUNDRY_MIN); }).map(function (x) {
           return { x1: x.x1, y1: x.y1, x2: x.x2, y2: x.y2, score: x.score, label: map[x.label], cls: sh.indexOf(map[x.label]), foundry: x.label };
         });
       }, function () { return []; });
@@ -1724,6 +1726,9 @@
         var prog = since ? Math.min(1, (Date.now() - since) / LAB.persistMs) : 0;
         timerBar.firstChild.style.width = (prog * 100) + '%';
         document.getElementById('vSub').textContent = missing.length ? (prog >= 1 ? 'تم التسجيل' : 'تأكيد خلال ' + Math.max(0, ((LAB.persistMs - (Date.now() - since)) / 1000)).toFixed(1) + ' ث') : '';
+        var FAR = { 'thermal-apron': 'مريلة', 'welding-shield': 'درع لحام', 'work-gloves': 'قفاز', 'n95-mask': 'كمامة', 'hard-hat': 'خوذة', 'hi-vis-vest': 'سترة' };
+        var fr = (st.foundryRaw || []).filter(function (x) { return FAR[x.label]; }).map(function (x) { return FAR[x.label] + ' ' + Math.round(x.score * 100) + '%'; });
+        document.getElementById('vSub').textContent += (AI.loaded('foundry') ? ' · زي المصنع: ' + (fr.length ? fr.join('، ') : 'مش شايف حاجة') : ' · موديل زي المصنع مش متحمّل');
       }
       if (hasPose() && behav) {
         var B = st.behavior, a = B.analysis;
