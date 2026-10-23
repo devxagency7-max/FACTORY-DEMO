@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.venv-train/
 env/
 .env
 /data/
@@ -42,3 +43,10 @@ platform/data/registry.ndjson
 platform/data/ipcams.json
 platform/bin/
 platform/data/agents.json
+platform/data/go2rtc.yaml
+platform/data/learning-reviews.ndjson
+app/weights/active.json
+app/weights/learned/
+
+# site photos / videos of real workers — never commit
+صور/

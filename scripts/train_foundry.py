@@ -12,10 +12,17 @@ Output: app/weights/foundry_gear_yolov8n.pt  +  data/learning/foundry_run/ (metr
 """
 import argparse
 import random
+import re
 import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def group_of(stem: str) -> str:
+    """vid_005_vid2_003 → 'vid2' (all frames of one video); a photo is its own group."""
+    m = re.search(r"(vid\d+)_\d+$", stem)
+    return m.group(1) if m else stem
 
 
 def build_dataset(src: Path, dst: Path, val_frac: float, seed: int):
@@ -27,11 +34,20 @@ def build_dataset(src: Path, dst: Path, val_frac: float, seed: int):
             pairs.append((img, lab))
     if len(pairs) < 4:
         raise SystemExit(f"only {len(pairs)} labelled images in {src} — run scripts/vlm_label.py first")
-    random.Random(seed).shuffle(pairs)
-    n_val = max(1, int(len(pairs) * val_frac))
+    # split by GROUP, not by image: frames of one video are near-duplicates, so they all go to the same side —
+    # otherwise the exam would be on frames the model saw 2 seconds earlier and the score would be inflated
+    groups = {}
+    for img, lab in pairs:
+        groups.setdefault(group_of(img.stem), []).append((img, lab))
+    keys = sorted(groups)
+    random.Random(seed).shuffle(keys)
+    val, train, target = [], [], max(1, int(len(pairs) * val_frac))
+    for k in keys:
+        (val if len(val) < target else train).extend(groups[k])
     if dst.exists():
         shutil.rmtree(dst)
-    for split, items in (("val", pairs[:n_val]), ("train", pairs[n_val:])):
+    n_val = len(val)
+    for split, items in (("val", val), ("train", train)):
         (dst / "images" / split).mkdir(parents=True, exist_ok=True)
         (dst / "labels" / split).mkdir(parents=True, exist_ok=True)
         for img, lab in items:
