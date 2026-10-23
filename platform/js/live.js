@@ -750,11 +750,11 @@
   var PPE_AR = { helmet: 'الخوذة', glasses: 'نظارة الوقاية', vest: 'السترة العاكسة', gloves: 'القفازات', ears: 'سماعات الأذن' };
   var PPE_EN = { helmet: 'NO HELMET', glasses: 'NO GLASSES', vest: 'NO VEST', gloves: 'NO GLOVES', ears: 'NO EAR PROTECTION' };
   var PPE_SUB = { helmet: 'HARD HAT', glasses: 'SAFETY GLASSES', vest: 'HI-VIS VEST', gloves: 'SAFETY GLOVES · لما الإيدين تبان', ears: 'EAR MUFFS · ضوضاء المكن' };
-  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ergo: false, station: false, ppeEngine: 'browser' };
+  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ergo: false, station: false, distance: true, ppeEngine: 'browser' };
   try { Object.assign(LAB, JSON.parse(localStorage.getItem('egic-lab') || '{}')); } catch (e) { }
   LAB.required = { helmet: true, glasses: true, vest: true, gloves: true, ears: true }; // PPE always checks the full set
   LAB.persistMs = 5000; // an item must be clearly missing for 5 s (wiping sweat, adjusting a visor) before anything is reported
-  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ergo: LAB.ergo, station: LAB.station, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
+  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ergo: LAB.ergo, station: LAB.station, distance: LAB.distance, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
 
   U.register('live', function (v) {
     var st = { running: false, stream: null, src: null, srcKind: null, busy: false, last: null, pose: null, fps: 0, ms: 0, frames: 0, fpsT: performance.now(), tracker: null, lastFace: 0, faces: [], captures: [], behavior: { sosSince: 0, fallSince: 0, ergoSince: 0, absentSince: 0, present: false, cool: {} }, flip: 0, destroyed: false };
@@ -901,7 +901,8 @@
       h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.mirror, onchange: function (e) { LAB.mirror = e.target.checked; saveLab(); } }), 'عكس الصورة'),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.sound, onchange: function (e) { LAB.sound = e.target.checked; saveLab(); } }), 'تنبيه صوتي'),
-      h('label', { class: 'switch', title: 'الكاميرا تلحق الوش/الشخص وتزوّم تلقائيًا، وتلف ناحية أي مخالفة أو خطر (كاميرات IP المتحركة فقط)' }, h('input', { type: 'checkbox', checked: LAB.autoTrack, onchange: function (e) { LAB.autoTrack = e.target.checked; saveLab(); if (ptzEl) ptzEl.style.opacity = LAB.autoTrack ? '0.5' : '1'; } }), '🎯 تتبّع تلقائي'));
+      h('label', { class: 'switch', title: 'الكاميرا تلحق الوش/الشخص وتزوّم تلقائيًا، وتلف ناحية أي مخالفة أو خطر (كاميرات IP المتحركة فقط)' }, h('input', { type: 'checkbox', checked: LAB.autoTrack, onchange: function (e) { LAB.autoTrack = e.target.checked; saveLab(); if (ptzEl) ptzEl.style.opacity = LAB.autoTrack ? '0.5' : '1'; } }), '🎯 تتبّع تلقائي'),
+      h('label', { class: 'switch', title: 'للعمال البعيدين: النظام بيقسّم الصورة لمربعات ويكبّر البعيد عشان يقرا الـPPE بتاعه — بيشتغل تلقائيًا بس لما يبان حد بعيد عشان السرعة ما تقلّش' }, h('input', { type: 'checkbox', checked: LAB.distance, onchange: function (e) { LAB.distance = e.target.checked; saveLab(); } }), '🔭 كشف على البعد'));
     var engSel = U.select([['browser', 'محرك الذكاء: داخل الجهاز (المتصفح)'], ['titan', 'محرك الذكاء: خادم EGIC AI (Python)']], LAB.ppeEngine, function (x) { LAB.ppeEngine = x; saveLab(); st.tracker = null; prepareModels(); renderSide(); });
     var reqRow = h('div', { class: 'lab-controls' }, engSel, h('span', { class: 'muted', style: { fontSize: '12px' }, text: 'فحص PPE: ' + PPE_KEYS.map(function (k) { return PPE_AR[k]; }).join(' · ') }),
       h('label', { class: 'switch', title: 'إنذار انحناء الظهر — للكاميرا المثبّتة على محطة عمل واحدة. اقفله مع كاميرا عامة لأن الانحناء شغل طبيعي' }, h('input', { type: 'checkbox', checked: LAB.ergo, onchange: function (e) { LAB.ergo = e.target.checked; saveLab(); } }), 'إنذار وضعية الظهر'),
@@ -1219,6 +1220,24 @@
       }).catch(function () { }).then(function () { st.faceBusy = false; });
     }
 
+    // Smart tiled PPE for distant workers: the full frame PLUS one rotating 60% tile — but only when a far/small person is
+    // actually around and the device can keep up, so close/empty scenes stay fast. A far worker is near full-size inside the
+    // tile (the model stops shrinking them to a few pixels), so their PPE reads reliably. Results merged + de-duped by NMS.
+    function ppeTiles(d) {
+      var tw = Math.round(d.w * 0.6), th = Math.round(d.h * 0.6);
+      return [{ x1: 0, y1: 0, x2: tw, y2: th }, { x1: d.w - tw, y1: 0, x2: d.w, y2: th }, { x1: 0, y1: d.h - th, x2: tw, y2: d.h }, { x1: d.w - tw, y1: d.h - th, x2: d.w, y2: d.h }];
+    }
+    function ppeDetect(d, now) {
+      var full = AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5 });
+      if (!(LAB.distance && d.w >= 800 && (st.inferEMA || 0) < 260 && st.farPerson)) { st.ppeTileCache = null; return full; }
+      var tiles = ppeTiles(d), i = (st.ppeTi = ((st.ppeTi || 0) + 1)) % tiles.length;
+      return Promise.all([full, AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5, crop: tiles[i] })]).then(function (r) {
+        st.ppeTileCache = (st.ppeTileCache || []).filter(function (e) { return e.i !== i && now - e.t < 1500; });
+        st.ppeTileCache.push({ i: i, t: now, dets: r[1] });
+        var merged = r[0].slice(); st.ppeTileCache.forEach(function (e) { merged = merged.concat(e.dets); });
+        return AI.nms(merged, 0.55, true);
+      });
+    }
     function infer(d) {
       var t0 = performance.now(), now = Date.now();
       // first ~1.5s after start: run only the lightest model so the GPU settles and the opening is smooth
@@ -1229,9 +1248,11 @@
       var titan = ppeEng === 'titan';
       if (doFire && (titan || AI.loaded('fire'))) jobs.push((titan ? serverDetect('/fire/detect', st.src, d) : AI.run('fire', st.src, { conf: { fire: 0.25, smoke: 0.4 }, iou: 0.45 })).then(function (dets) { hazards('fire', dets, d, now); }, serverErr));
       if (doSmoking && (titan || AI.loaded('smoking'))) jobs.push((titan ? serverDetect('/smoking/detect', st.src, d) : AI.run('smoking', st.src, { conf: { cigarette: 0.45, vape: 0.45, smoke: 0.45, person: 0.4 }, iou: 0.5 })).then(function (dets) { hazards('smoking', dets, d, now); }, serverErr));
-      if (doPPE && (titan ? titanOk : AI.loaded('ppe'))) jobs.push((titan ? titanDetect(st.src, d) : AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5 })).then(function (dets) {
+      if (doPPE && (titan ? titanOk : AI.loaded('ppe'))) jobs.push((titan ? titanDetect(st.src, d) : ppeDetect(d, now)).then(function (dets) {
         if (!st.tracker) st.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: st.srcKind === 'image' ? 60000 : 25000 });
         var people = titan && dets.schema !== 'sh17' ? AI.analyzePPEHF(dets, d.w, d.h) : AI.analyzePPE(dets, d.w, d.h);
+        // is there a far (small but real) worker in view? → turn on tiling next frames so their PPE reads at distance
+        st.farPerson = people.some(function (p) { var bh = p.box.y2 - p.box.y1; return !p.box.synthetic && bh < d.h * 0.4 && bh > d.h * 0.04; });
         var vio = st.tracker.update(people, now);
         st.last = { dets: dets, people: people, tracks: st.tracker.tracks.slice(), t: now };
         vio.forEach(function (x) { reportPPE(x.track, x.items, d); });

@@ -268,8 +268,9 @@
     var by = {}; dets.forEach(function (d) { (by[d.label] = by[d.label] || []).push(d); });
     var persons = (by.person || []).slice();
     // head protection = a hard hat OR a welding/thermal face-guard (this foundry: either one counts, not both)
-    var heads = by.head || [], faces = by.face || [], helmets = (by.helmet || []).concat(by['face-guard'] || []), glasses = by.glasses || [];
-    // body protection = a hi-vis vest OR an apron / coverall (safety-suit / medical-suit)
+    var heads = by.head || [], faces = by.face || [], helmets = by.helmet || [], guards = by['face-guard'] || [], glasses = by.glasses || [];
+    // body protection = a hi-vis vest OR a coverall; a welder's thermal apron is dark and rarely detected, so a welder
+    // (face-guard on the head) is taken to be wearing their apron — see the welder branch in the vest check below
     var vests = (by['safety-vest'] || []).concat(by['safety-suit'] || []).concat(by['medical-suit'] || []);
     var gloves = by.gloves || [], hands = by.hands || [], muffs = by['ear-mufs'] || [], ears = by.ear || [];
     // People without a person box (close-up webcam): synthesise one from head/face
@@ -292,9 +293,13 @@
       // helmet
       if (head) {
         var hz = expand(head, 0.25, 0.7, 0.25, 0.1);
-        var hel = pickBest(helmets, function (x) { return (inside(center(x), hz) || ioa(x, hz) > 0.4) ? x.score : 0; });
+        var inZone = function (x) { return (inside(center(x), hz) || ioa(x, hz) > 0.4) ? x.score : 0; };
+        var hel = pickBest(helmets, inZone);
+        var guard = hel ? null : pickBest(guards, inZone); // welding/thermal face-guard = head protection too
+        res.welder = !!guard; // a welder → expected to wear a thermal apron, not a hi-vis vest
+        var cover = hel || guard;
         var headClear = boxH(head) >= JUDGE.headPx && headScore >= JUDGE.anchorScore;
-        res.items.helmet = hel ? { state: 'OK', box: hel, score: hel.score } : headClear ? { state: 'MISSING', box: { x1: head.x1 - (head.x2 - head.x1) * 0.08, y1: head.y1 - (head.y2 - head.y1) * 0.35, x2: head.x2 + (head.x2 - head.x1) * 0.08, y2: head.y1 + (head.y2 - head.y1) * 0.4 } } : { state: 'UNKNOWN' };
+        res.items.helmet = cover ? { state: 'OK', box: cover, score: cover.score } : headClear ? { state: 'MISSING', box: { x1: head.x1 - (head.x2 - head.x1) * 0.08, y1: head.y1 - (head.y2 - head.y1) * 0.35, x2: head.x2 + (head.x2 - head.x1) * 0.08, y2: head.y1 + (head.y2 - head.y1) * 0.4 } } : { state: 'UNKNOWN' };
       } else res.items.helmet = { state: 'UNKNOWN' };
       // safety glasses — needs a visible face, big enough that glasses would show
       if (face) {
@@ -313,7 +318,10 @@
         var vs = pickBest(vests, function (x) { return (ioa(x, tz) > 0.45 && center(x).y > (head ? head.y2 - headH * 0.2 : p.y1)) ? x.score : 0; });
         var pw = p.x2 - p.x1;
         var torsoClear = ph >= JUDGE.personPx && p.score >= JUDGE.anchorScore;
-        res.items.vest = vs ? { state: 'OK', box: vs, score: vs.score } : torsoClear ? { state: 'MISSING', box: { x1: p.x1 + pw * 0.12, y1: torsoTop, x2: p.x2 - pw * 0.12, y2: Math.min(p.y2, torsoTop + headH * 2.6) } } : { state: 'UNKNOWN' };
+        var apronBox = { x1: p.x1 + pw * 0.12, y1: torsoTop, x2: p.x2 - pw * 0.12, y2: Math.min(p.y2, torsoTop + headH * 2.6) };
+        res.items.vest = vs ? { state: 'OK', box: vs, score: vs.score }
+          : res.welder ? { state: 'OK', box: apronBox, score: 0.6, apron: true } // welder → thermal apron assumed as body cover
+          : torsoClear ? { state: 'MISSING', box: apronBox } : { state: 'UNKNOWN' };
       } else res.items.vest = { state: 'UNKNOWN' };
       // gloves — judged only when a bare hand is clearly visible: a gloved hand on the person = OK, a confident bare hand = MISSING
       var hz2 = expand(p, 0.12, 0, 0.12, 0.05);
