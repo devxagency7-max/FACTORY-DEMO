@@ -1059,7 +1059,7 @@
     else if (action === 'referee') {
       // the AI referee's second opinion (vision LLM judging by the foundry's gear rules) — a note, never a human review
       var rf = body.referee || {};
-      e.referee = { verdict: String(rf.verdict || 'unclear'), reason: String(rf.reason || '').slice(0, 300), model: rf.model || null, ts: now };
+      e.referee = { verdict: String(rf.verdict || 'unclear'), reason: String(rf.reason || '').slice(0, 300), model: rf.model || null, subject: !!rf.subject, ts: now };
     }
     if (body.note && action !== 'confirm' && action !== 'false_positive') e.note = body.note;
     var w = e.workerId ? this.workerById[e.workerId] : null;

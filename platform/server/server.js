@@ -113,22 +113,34 @@ const refereeFrames = new Map(); // incident → raw frame data URL (sibling eve
 let refereeBusy = 0, refereeWindow = [];
 function refereeImage(ev, learn) {
   if (learn && learn.frame) return learn.frame;
-  if (ev.incident && refereeFrames.has(ev.incident)) return refereeFrames.get(ev.incident).frame;
+  if (ev.incident && refereeFrames.has(ev.incident) && refereeFrames.get(ev.incident).frame) return refereeFrames.get(ev.incident).frame;
   const f = ev.evidence && ev.evidence.image && path.join(EVID, path.basename(ev.evidence.image)); // fallback: the annotated snapshot
   try { return 'data:image/jpeg;base64,' + fs.readFileSync(f).toString('base64'); } catch (e) { return null; }
 }
-async function askReferee(image, alarm) {
-  const prompt = `An automated camera system in a brass FOUNDRY raised this alarm on the photo: "${REFEREE_WHAT[alarm] || alarm}".\n`
-    + REFEREE_POLICY
-    + 'Look at the worker(s) in the photo. Is the alarm TRUE for at least one clearly visible worker, judged by the foundry rules above? '
-    + 'If the relevant body part is not clearly visible, answer unclear — never guess.\n'
-    + 'Answer ONLY JSON: {"verdict": "real" | "false_alarm" | "unclear", "reason": "<one short sentence in Arabic>"}';
+async function askReferee(image, alarm, subject) {
+  // with a crop of the flagged worker the referee judges THAT person only (the scene is context); without one it can only
+  // judge the scene, so it must not clear the alarm because someone ELSE in view is dressed correctly
+  const prompt = subject
+    ? `An automated camera system in a brass FOUNDRY raised this alarm about ONE worker: "${REFEREE_WHAT[alarm] || alarm}".\n`
+      + 'IMAGE 1 is a crop of exactly that worker. IMAGE 2 is the full scene, for context only.\n'
+      + REFEREE_POLICY
+      + 'Judge ONLY the worker in IMAGE 1 — ignore every other person in the scene. Is the alarm TRUE for that worker, judged by the '
+      + 'foundry rules above? If the relevant body part of that worker is not clearly visible, answer unclear — never guess.\n'
+      + 'Answer ONLY JSON: {"verdict": "real" | "false_alarm" | "unclear", "reason": "<one short sentence in Arabic about that worker>"}'
+    : `An automated camera system in a brass FOUNDRY raised this alarm on the photo: "${REFEREE_WHAT[alarm] || alarm}".\n`
+      + REFEREE_POLICY
+      + 'We do not know which worker it was raised about. Answer false_alarm ONLY if EVERY clearly visible worker complies; if any '
+      + 'visible worker breaks the rule answer real; if you cannot tell, answer unclear — never guess.\n'
+      + 'Answer ONLY JSON: {"verdict": "real" | "false_alarm" | "unclear", "reason": "<one short sentence in Arabic>"}';
+  const content = [{ type: 'text', text: prompt }];
+  if (subject) content.push({ type: 'image_url', image_url: { url: subject } });
+  content.push({ type: 'image_url', image_url: { url: image } });
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 45000);
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST', signal: ctl.signal,
       headers: { Authorization: 'Bearer ' + REFEREE_KEY, 'Content-Type': 'application/json', 'X-Title': 'EGIC PPE referee' },
-      body: JSON.stringify({ model: REFEREE_MODEL, temperature: 0, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }] })
+      body: JSON.stringify({ model: REFEREE_MODEL, temperature: 0, messages: [{ role: 'user', content: content }] })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const txt = (await r.json()).choices[0].message.content || '';
@@ -143,18 +155,25 @@ function internalAction(id, body) {
   if (out.status === 200) { const j = engine.journalEntry(pathname, body, out.body); if (j) journal(j[0], j[1]); }
   return out;
 }
-function refereeEvent(ev, learn) {
+function refereeEvent(ev, learn, subject) {
   if (REFEREE_MODE === 'off' || !REFEREE_KEY || !ev || !REFEREE_TYPES.has(ev.type)) return;
-  if (ev.incident && learn && learn.frame) refereeFrames.set(ev.incident, { frame: learn.frame, t: Date.now() });
+  if (ev.incident && ((learn && learn.frame) || subject)) {
+    const c = refereeFrames.get(ev.incident) || {};
+    if (learn && learn.frame) c.frame = learn.frame;
+    if (subject) c.subject = subject;
+    c.t = Date.now(); refereeFrames.set(ev.incident, c);
+  }
   // a little delay so the sibling event that carries the raw frame has arrived; cap the rate so a glitch can't run up a bill
   setTimeout(async () => {
     const now = Date.now();
     refereeWindow = refereeWindow.filter((t) => now - t < 60000);
     if (refereeBusy >= 3 || refereeWindow.length >= 40) return log(C.y + '● REFEREE' + C.x, C.dim + 'skipped (rate cap) ' + ev.id + C.x);
     const image = refereeImage(ev, learn); if (!image) return;
+    const subj = subject || (ev.incident && refereeFrames.has(ev.incident) && refereeFrames.get(ev.incident).subject) || null;
     refereeBusy++; refereeWindow.push(now);
     try {
-      const v = await askReferee(image, ev.type);
+      const v = await askReferee(image, ev.type, subj);
+      v.subject = !!subj; // was the referee shown WHO the alarm is about?
       internalAction(ev.id, { action: 'referee', referee: v });
       if (v.verdict === 'false_alarm' && REFEREE_MODE === 'auto') internalAction(ev.id, { action: 'false_positive', actor: 'الحَكَم الآلي (AI)', note: v.reason });
       log(C.c + '● REFEREE' + C.x, ev.type, '→', (v.verdict === 'false_alarm' ? C.g : v.verdict === 'real' ? C.r : C.y) + v.verdict + C.x, C.dim + ev.id + ' · ' + v.reason.slice(0, 80) + C.x);
@@ -668,6 +687,7 @@ async function api(req, res, pathname, query) {
     }
     // keep the big raw training frame out of the journal/engine; it is saved to the learning notebook after the id is known
     if (pathname === '/api/v1/events' && body.learn) { req._learn = body.learn; delete body.learn; }
+    if (pathname === '/api/v1/events' && body.subject) { req._subject = String(body.subject); delete body.subject; } // referee-only crop
     // the referee's note can only come from this server, never from a browser
     if (/^\/api\/v1\/events\/[^/]+\/action$/.test(pathname) && body.action === 'referee') return send(res, 403, { error: 'referee_is_server_only' });
     if (pathname === '/api/v1/gate/log') {
@@ -693,7 +713,7 @@ async function api(req, res, pathname, query) {
     if (j) journal(j[0], j[1]);
     // save the raw frame behind a live alarm into the learning notebook, keyed by the event id
     if (pathname === '/api/v1/events' && out.body && req._learn) saveLearnEvent(out.body.incident || out.body.id, req._learn);
-    if (pathname === '/api/v1/events' && out.body) refereeEvent(out.body, req._learn); // second opinion on PPE alarms
+    if (pathname === '/api/v1/events' && out.body) refereeEvent(out.body, req._learn, req._subject); // second opinion on PPE alarms
     // the supervisor's decision on an AI detection (engine OR live lab) = the ground truth the AI student learns from
     if (/^\/api\/v1\/events\/[^/]+\/action$/.test(pathname) && out.body && /^(ai-engine|live-)/.test(out.body.source || '') && (out.body.incident || out.body.id)) {
       try { fs.appendFileSync(REVIEWS_FILE, JSON.stringify({ incident: out.body.incident || out.body.id, type: out.body.type, review: out.body.review, status: out.body.status, reviewer: out.body.reviewer || null, ts: Date.now() }) + '\n'); } catch (e) { /* non-fatal */ }

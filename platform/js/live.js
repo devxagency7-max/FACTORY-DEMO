@@ -888,8 +888,8 @@
       var tnow = Date.now(), key = 'u' + Math.round(((track.box.x1 + track.box.x2) / 2) / 140) + '_' + Math.round(((track.box.y1 + track.box.y2) / 2) / 140);
       items = items.filter(function (k) { var kk = key + ':' + k; if (f.cool[kk] && tnow - f.cool[kk] < 45000) return false; f.cool[kk] = tnow; return true; });
       if (!items.length) return;
-      var snap = f.canvas.toDataURL('image/jpeg', 0.8);
-      items.forEach(function (k) { API.post('events', { type: PPE_TYPES[k], cameraId: f.cam.id, conf: 0.85, source: 'live-ai', evidence: { kind: 'live', image: snap, model: 'YOLOv8s-SH17' } }).catch(function () { }); });
+      var snap = f.canvas.toDataURL('image/jpeg', 0.8), subject = f._frame ? subjectCrop(f._frame, track.box, d) : undefined;
+      items.forEach(function (k) { API.post('events', { type: PPE_TYPES[k], cameraId: f.cam.id, conf: 0.85, source: 'live-ai', evidence: { kind: 'live', image: snap, model: 'YOLOv8s-SH17' }, subject: subject }).catch(function () { }); });
       f.wrap.classList.remove('is-alert'); void f.wrap.offsetWidth; f.wrap.classList.add('is-alert');
     }
     function feedFall(f, people, d, now) {
@@ -1393,6 +1393,20 @@
       return (dets || []).filter(function (x) { return x && x.label && (x.x2 - x.x1) > 1 && (x.y2 - x.y1) > 1; })
         .map(function (x) { return { label: x.label, box: [Math.round(x.x1), Math.round(x.y1), Math.round(x.x2), Math.round(x.y2)], score: Math.round((x.score || 0) * 1000) / 1000 }; });
     }
+    // the ONE worker an alarm is about, cropped from the raw frame and enlarged if small — sent to the server's AI referee
+    // so it judges THAT person, not whoever else is in view (a visitor without gear must never "confirm" an alarm on a
+    // correctly dressed welder, and a welder's ear muffs must never clear an alarm on someone else)
+    function subjectCrop(src, box, d) {
+      try {
+        var bw = box.x2 - box.x1, bh = box.y2 - box.y1, px = bw * 0.15, py = bh * 0.08;
+        var x1 = Math.max(0, box.x1 - px), y1 = Math.max(0, box.y1 - py), x2 = Math.min(d.w, box.x2 + px), y2 = Math.min(d.h, box.y2 + py);
+        var w = x2 - x1, hh = y2 - y1; if (w < 8 || hh < 8) return undefined;
+        var sc = Math.min(4, Math.max(1, 640 / Math.max(w, hh)));
+        var c = document.createElement('canvas'); c.width = Math.round(w * sc); c.height = Math.round(hh * sc);
+        var g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(src, x1, y1, w, hh, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', 0.9);
+      } catch (e) { return undefined; }
+    }
     function learnPayload(task, type, dets, d) {
       if (ppeEng === 'titan') return undefined; // the server engine keeps its own notebook
       var frame = rawFrameURL(d); if (!frame) return undefined;
@@ -1425,7 +1439,8 @@
       if (LAB.sound) beep();
       workerInfo(wid).then(function (w) {
         var learn = learnPayload('ppe', PPE_TYPES[items[0]], st.last && st.last.dets, d); // raw frame + boxes, once per incident
-        var posts = items.map(function (k, i) { return API.post('events', { type: PPE_TYPES[k], workerId: wid, cameraId: camId(), conf: Math.round(conf * 100) / 100, source: 'live-ai', incident: incident, missing: items, durationSec: Math.round((Date.now() - (track.since[k] || Date.now())) / 1000) + 1, evidence: { kind: 'live', image: imgUrl, model: ppeEng === 'titan' ? 'TITAN-PPE ppe_hf.onnx' : 'YOLOv8s-SH17' }, learn: i === 0 ? learn : undefined }); });
+        var subject = subjectCrop(st.src, track.box, d); // who this alarm is about — for the referee
+        var posts = items.map(function (k, i) { return API.post('events', { type: PPE_TYPES[k], workerId: wid, cameraId: camId(), conf: Math.round(conf * 100) / 100, source: 'live-ai', incident: incident, missing: items, durationSec: Math.round((Date.now() - (track.since[k] || Date.now())) / 1000) + 1, evidence: { kind: 'live', image: imgUrl, model: ppeEng === 'titan' ? 'TITAN-PPE ppe_hf.onnx' : 'YOLOv8s-SH17' }, learn: i === 0 ? learn : undefined, subject: subject }); });
         return Promise.all(posts).then(function (evs) {
           U.toast('كشف بانتظار مراجعة المشرف' + (w ? ' · ' + w.name + '؟' : ''), items.map(function (k) { return 'بدون ' + PPE_AR[k]; }).join(' · ') + ' · ' + (evs[0] ? evs[0].id : ''), { kind: 'live', img: imgUrl, action: evs[0] ? ['مراجعة', function () { U.openEvent(evs[0]); }] : null, ms: 7000 });
         });
