@@ -750,11 +750,11 @@
   var PPE_AR = { helmet: 'الخوذة', glasses: 'نظارة الوقاية', vest: 'السترة العاكسة', gloves: 'القفازات', ears: 'سماعات الأذن' };
   var PPE_EN = { helmet: 'NO HELMET', glasses: 'NO GLASSES', vest: 'NO VEST', gloves: 'NO GLOVES', ears: 'NO EAR PROTECTION' };
   var PPE_SUB = { helmet: 'HARD HAT', glasses: 'SAFETY GLASSES', vest: 'HI-VIS VEST', gloves: 'SAFETY GLOVES · لما الإيدين تبان', ears: 'EAR MUFFS · ضوضاء المكن' };
-  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ergo: false, station: false, distance: true, ppeEngine: 'browser' };
+  var LAB = { mode: 'ppe', mirror: true, sound: true, autoTrack: false, required: { helmet: true, glasses: true, vest: true, gloves: true, ears: true }, idMode: 'auto', profileId: null, persistMs: 1500, stationSec: 8, ergo: false, station: false, distance: true, markers: true, ppeEngine: 'browser' };
   try { Object.assign(LAB, JSON.parse(localStorage.getItem('egic-lab') || '{}')); } catch (e) { }
   LAB.required = { helmet: true, glasses: true, vest: true, gloves: true, ears: true }; // PPE always checks the full set
   LAB.persistMs = 5000; // an item must be clearly missing for 5 s (wiping sweat, adjusting a visor) before anything is reported
-  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ergo: LAB.ergo, station: LAB.station, distance: LAB.distance, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
+  function saveLab() { try { localStorage.setItem('egic-lab', JSON.stringify({ mode: LAB.mode, mirror: LAB.mirror, sound: LAB.sound, autoTrack: LAB.autoTrack, required: LAB.required, idMode: LAB.idMode, profileId: LAB.profileId, stationSec: LAB.stationSec, ergo: LAB.ergo, station: LAB.station, distance: LAB.distance, markers: LAB.markers, ppeEngine: LAB.ppeEngine })); } catch (e) { } }
 
   U.register('live', function (v) {
     var st = { running: false, stream: null, src: null, srcKind: null, busy: false, last: null, pose: null, fps: 0, ms: 0, frames: 0, fpsT: performance.now(), tracker: null, lastFace: 0, faces: [], captures: [], behavior: { sosSince: 0, fallSince: 0, ergoSince: 0, absentSince: 0, present: false, cool: {} }, flip: 0, destroyed: false };
@@ -935,7 +935,8 @@
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.mirror, onchange: function (e) { LAB.mirror = e.target.checked; saveLab(); } }), 'عكس الصورة'),
       h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: LAB.sound, onchange: function (e) { LAB.sound = e.target.checked; saveLab(); } }), 'تنبيه صوتي'),
       h('label', { class: 'switch', title: 'الكاميرا تلحق الوش/الشخص وتزوّم تلقائيًا، وتلف ناحية أي مخالفة أو خطر (كاميرات IP المتحركة فقط)' }, h('input', { type: 'checkbox', checked: LAB.autoTrack, onchange: function (e) { LAB.autoTrack = e.target.checked; saveLab(); if (ptzEl) ptzEl.style.opacity = LAB.autoTrack ? '0.5' : '1'; } }), '🎯 تتبّع تلقائي'),
-      h('label', { class: 'switch', title: 'للعمال البعيدين: النظام بيقسّم الصورة لمربعات ويكبّر البعيد عشان يقرا الـPPE بتاعه — بيشتغل تلقائيًا بس لما يبان حد بعيد عشان السرعة ما تقلّش' }, h('input', { type: 'checkbox', checked: LAB.distance, onchange: function (e) { LAB.distance = e.target.checked; saveLab(); } }), '🔭 كشف على البعد'));
+      h('label', { class: 'switch', title: 'للعمال البعيدين: النظام بيقسّم الصورة لمربعات ويكبّر البعيد عشان يقرا الـPPE بتاعه — بيشتغل تلقائيًا بس لما يبان حد بعيد عشان السرعة ما تقلّش' }, h('input', { type: 'checkbox', checked: LAB.distance, onchange: function (e) { LAB.distance = e.target.checked; saveLab(); } }), '🔭 كشف على البعد'),
+      h('label', { class: 'switch', title: 'يقرا كود العامل المطبوع على ضهر المريلة أو الخوذة (scripts/make_markers.py) — بيعرف العامل حتى لو مدّي ضهره أو لابس درع' }, h('input', { type: 'checkbox', checked: LAB.markers, onchange: function (e) { LAB.markers = e.target.checked; saveLab(); if (LAB.markers) ensureAruco(); } }), '🏷 أكواد العمال'));
     var engSel = U.select([['browser', 'محرك الذكاء: داخل الجهاز (المتصفح)'], ['titan', 'محرك الذكاء: خادم EGIC AI (Python)']], LAB.ppeEngine, function (x) { LAB.ppeEngine = x; saveLab(); st.tracker = null; prepareModels(); renderSide(); });
     var reqRow = h('div', { class: 'lab-controls' }, engSel, h('span', { class: 'muted', style: { fontSize: '12px' }, text: 'فحص PPE: ' + PPE_KEYS.map(function (k) { return PPE_AR[k]; }).join(' · ') }),
       h('label', { class: 'switch', title: 'إنذار انحناء الظهر — للكاميرا المثبّتة على محطة عمل واحدة. اقفله مع كاميرا عامة لأن الانحناء شغل طبيعي' }, h('input', { type: 'checkbox', checked: LAB.ergo, onchange: function (e) { LAB.ergo = e.target.checked; saveLab(); } }), 'إنذار وضعية الظهر'),
@@ -1232,10 +1233,59 @@
           infer(d).then(function () { st.busy = false; }, function (e) { console.error(e); st.busy = false; });
         }
         kickFace(d, now, canvasSrc);
+        kickMarkers(d, now, canvasSrc);
         autoTrackTick(d, now);
         drawOverlay(g, d, mir);
       }
       if (st.srcKind === 'image') { setTimeout(function () { requestAnimationFrame(loop); }, 120); } else requestAnimationFrame(loop);
+    }
+
+    // ---- worker ID codes (ArUco 4x4, printed by scripts/make_markers.py): the code number IS the employee number
+    // (code 1 → EMP-0001). Read even from behind / under a welding shield, where a face can't be. Code 0 = distance test.
+    var arucoP = null, arucoDet = null;
+    function ensureAruco() {
+      if (!arucoP) arucoP = loadScript('js/vendor/aruco/cv.js').then(function () { return loadScript('js/vendor/aruco/aruco.js'); })
+        .then(function () { return loadScript('js/vendor/aruco/aruco_4x4_1000.js'); })
+        .then(function () { arucoDet = new window.AR.Detector({ dictionaryName: 'ARUCO_4X4_1000', maxHammingDistance: 1 }); })
+        .catch(function (e) { console.warn('marker reader unavailable', e); arucoP = null; });
+      return arucoP;
+    }
+    var markerCv = null;
+    function kickMarkers(d, now, canvasSrc) {
+      if (!LAB.markers || st.markerBusy || now - (st.lastMarkerT || 0) < 450) return;
+      if (!arucoDet) { ensureAruco(); return; }
+      st.lastMarkerT = now; st.markerBusy = true;
+      try {
+        if (canvasSrc) st.src = phoneFrame(st, phoneImg) || st.src;
+        var src = st.src, sc = Math.min(1, 1600 / d.w), w = Math.round(d.w * sc), hh = Math.round(d.h * sc);
+        var c = markerCv || (markerCv = document.createElement('canvas')); if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; }
+        var g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(src, 0, 0, w, hh);
+        var found = arucoDet.detect(g.getImageData(0, 0, w, hh)).filter(function (m) { return m.id >= 0 && m.id < 50; });
+        var t = Date.now();
+        st.markers = found.map(function (m) {
+          var pts = m.corners.map(function (p) { return { x: p.x / sc, y: p.y / sc }; });
+          var xs = pts.map(function (p) { return p.x; }), ys = pts.map(function (p) { return p.y; });
+          var box = { x1: Math.min.apply(null, xs), y1: Math.min.apply(null, ys), x2: Math.max.apply(null, xs), y2: Math.max.apply(null, ys) };
+          var side = (Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) + Math.hypot(pts[1].x - pts[2].x, pts[1].y - pts[2].y)) / 2;
+          return { id: m.id, pts: pts, box: box, side: side, wid: m.id ? 'EMP-' + ('000' + m.id).slice(-4) : null, t: t };
+        });
+        st.markers.forEach(function (m) {
+          if (!m.wid) return;
+          var miss = st.markerMiss = st.markerMiss || {};
+          if (miss[m.wid] && t - miss[m.wid] < 30000) { m.unknown = true; return; }
+          workerInfo(m.wid).then(function (w) {
+            if (!w) { m.unknown = true; miss[m.wid] = Date.now(); return; } // a code with no employee behind it — never guess a name
+            m.name = w.name;
+            // the code sits on this person's back / helmet → the track whose box contains it gets the name (strong look)
+            if (st.tracker) st.tracker.assignIdentity(m.box, m.wid, 0.95);
+            if (st.srcKind !== 'image' && st.srcKind !== 'video') {
+              var trk = trackFor(m.box), pb = trk ? trk.box : m.box;
+              sighter.feed([{ label: m.wid, dist: 0.3, box: pb }], src);
+            }
+          });
+        });
+      } catch (e) { console.warn('marker pass failed', e); }
+      st.markerBusy = false;
     }
 
     // face recognition runs on its OWN guard + cadence, never stacked onto a model frame — keeps both smooth and reliable
@@ -1655,6 +1705,16 @@
         var alertRoi = B.absentSince && B.present && Date.now() - B.absentSince > LAB.stationSec * 500;
         drawRoi(g, mir ? mirrorBox(roi, d.w) : roi, alertRoi, d);
       }
+      // worker ID codes: outline + who it is (code 0 = the distance-test sheet: shows how many pixels wide it reads)
+      (st.markers || []).forEach(function (m) {
+        if (Date.now() - m.t > 1500) return;
+        var P = m.pts.map(function (p) { return mir ? { x: d.w - p.x, y: p.y } : p; });
+        g.beginPath(); P.forEach(function (p, i) { if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); }); g.closePath();
+        g.lineWidth = Math.max(3, d.w / 300); g.strokeStyle = m.unknown ? COL.warn : COL.info; g.stroke();
+        var txt = m.id === 0 ? 'كود اختبار · ' + Math.round(m.side) + ' بكسل' + (m.side >= 35 ? ' ✓ قراءة قوية' : ' ⚠ على الحافة')
+          : '🏷 #' + m.id + ' · ' + (m.name || (m.unknown ? 'كود مش متسجّل' : m.wid));
+        label(g, Math.min.apply(null, P.map(function (p) { return p.x; })), Math.min.apply(null, P.map(function (p) { return p.y; })), txt, m.unknown ? 'rgba(120,90,10,.92)' : 'rgba(20,70,120,.92)', fs);
+      });
       if (st.faces && st.faces.length && LAB.idMode === 'auto') st.faces.forEach(function (f) { var b = mir ? mirrorBox(f.box, d.w) : f.box; g.strokeStyle = 'rgba(247,146,36,.85)'; g.lineWidth = 1.5; g.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1); });
       // HUD chips
       clear(hudL); clear(hudR);
