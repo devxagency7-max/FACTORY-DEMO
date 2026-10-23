@@ -859,7 +859,8 @@
       if (!tasks.length) return;
       f.st.busy = true; f.st.lastInfer = now; var t0 = performance.now();
       var task = tasks[f.st.flip++ % tasks.length], job;
-      if (task === 'ppe') job = AI.run('ppe', frame, { conf: AI.PPE_CONF, iou: 0.5 }).then(function (dets) {
+      if (task === 'ppe') job = Promise.all([AI.run('ppe', frame, { conf: AI.PPE_CONF, iou: 0.5 }), foundryDets(frame)]).then(function (r) {
+        var dets = r[1].length ? AI.nms(r[0].concat(r[1]), 0.55, true) : r[0];
         if (feeds.indexOf(f) < 0) return;
         if (!f.st.tracker) f.st.tracker = new AI.Tracker({ required: reqKeys(), persistMs: LAB.persistMs, cooldownMs: 25000 });
         var people = AI.analyzePPE(dets, d.w, d.h);
@@ -1070,13 +1071,17 @@
       prepP = engP.then(function (eng) {
         ppeEng = eng; st.tracker = null;
         if (eng === 'titan') need = need.filter(function (n) { return n === 'pose' || (n === 'ppe' && titanSchema !== 'sh17'); });
+        // the site-trained foundry-gear model rides along with the browser PPE model (optional: if it fails, PPE still runs)
+        if (eng === 'browser' && need.indexOf('ppe') >= 0) need.splice(need.indexOf('ppe') + 1, 0, 'foundry');
         setLoading(true, 'تحميل محرك الذكاء الاصطناعي…', 0.05, 'TensorFlow.js · WebGL');
         return ensureCore();
       }).then(function (backend) {
         return need.reduce(function (p, name) {
           return p.then(function () {
-            setLoading(true, 'تحميل نموذج ' + ({ ppe: 'معدات الوقاية (YOLOv8s · SH17)', pose: 'الوضعيات (YOLO26-pose)', fire: 'الحريق والدخان (YOLOv8n · D-Fire)', smoking: 'كشف التدخين (YOLOv8)' })[name] + '…', 0.1 + 0.7 * i / need.length, AI.REGISTRY[name].label + ' · ' + backend.toUpperCase());
-            return ensureModel(name, function (f) { setLoading(true, null, 0.1 + 0.7 * (i + f) / need.length); }).then(function () { i++; });
+            setLoading(true, 'تحميل نموذج ' + ({ ppe: 'معدات الوقاية (YOLOv8s · SH17)', foundry: 'زي المصنع (مدرّب على صور المصنع)', pose: 'الوضعيات (YOLO26-pose)', fire: 'الحريق والدخان (YOLOv8n · D-Fire)', smoking: 'كشف التدخين (YOLOv8)' })[name] + '…', 0.1 + 0.7 * i / need.length, AI.REGISTRY[name].label + ' · ' + backend.toUpperCase());
+            var ld = ensureModel(name, function (f) { setLoading(true, null, 0.1 + 0.7 * (i + f) / need.length); });
+            if (name === 'foundry') ld = ld.catch(function (e) { console.warn('foundry-gear model unavailable', e); });
+            return ld.then(function () { i++; });
           });
         }, Promise.resolve());
       }).then(function () {
@@ -1259,7 +1264,27 @@
       var tw = Math.round(d.w * 0.6), th = Math.round(d.h * 0.6);
       return [{ x1: 0, y1: 0, x2: tw, y2: th }, { x1: d.w - tw, y1: 0, x2: d.w, y2: th }, { x1: 0, y1: d.h - th, x2: tw, y2: d.h }, { x1: d.w - tw, y1: d.h - th, x2: d.w, y2: d.h }];
     }
+    // PPE = the generic SH17 model + the site-trained foundry-gear model as extra evidence: a welding shield / thermal apron
+    // / work gloves it sees confidently is added as the SH17 class it proves (face-guard, safety-suit, gloves…), so a
+    // correctly dressed foundry worker is no longer flagged. Only positive gear is added — it can clear a false alarm,
+    // never create a violation.
+    var FOUNDRY_MIN = 0.45;
+    function foundryDets(src) {
+      if (!AI.loaded('foundry')) return Promise.resolve([]);
+      return AI.run('foundry', src || st.src, { conf: FOUNDRY_MIN, iou: 0.5 }).then(function (dets) {
+        var map = AI.FOUNDRY_AS_SH17, sh = AI.SH17;
+        return dets.filter(function (x) { return map[x.label]; }).map(function (x) {
+          return { x1: x.x1, y1: x.y1, x2: x.x2, y2: x.y2, score: x.score, label: map[x.label], cls: sh.indexOf(map[x.label]), foundry: x.label };
+        });
+      }, function () { return []; });
+    }
     function ppeDetect(d, now) {
+      return Promise.all([ppeSH17(d, now), foundryDets()]).then(function (r) {
+        st.foundryLast = r[1];
+        return r[1].length ? AI.nms(r[0].concat(r[1]), 0.55, true) : r[0];
+      });
+    }
+    function ppeSH17(d, now) {
       var full = AI.run('ppe', st.src, { conf: AI.PPE_CONF, iou: 0.5 });
       if (!(LAB.distance && d.w >= 800 && (st.inferEMA || 0) < 260 && st.farPerson)) { st.ppeTileCache = null; return full; }
       var tiles = ppeTiles(d), i = (st.ppeTi = ((st.ppeTi || 0) + 1)) % tiles.length;

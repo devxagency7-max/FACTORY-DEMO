@@ -48,8 +48,13 @@
     ocrPro: { dir: 'assets/models/ocr_eg_s', size: 640, onnx: true, names: OCR_M, label: 'YOLOv8s · Egyptian plate characters (38)' },
     // ONNX models (ONNX Runtime Web): input NCHW [1,3,640,640], output [1, 4+nc, 8400] — same decode as the TF.js ones
     fire:    { dir: 'assets/models/fire_n',    size: 640, onnx: true, names: ['smoke', 'fire'], label: 'YOLOv8n · D-Fire (fire · smoke)' },
-    smoking: { dir: 'assets/models/smoking_n', size: 640, onnx: true, names: ['smoke', 'person', 'cigarette', 'vape'], label: 'YOLOv8 · cigarette · vape' }
+    smoking: { dir: 'assets/models/smoking_n', size: 640, onnx: true, names: ['smoke', 'person', 'cigarette', 'vape'], label: 'YOLOv8 · cigarette · vape' },
+    // trained on THIS foundry's photos (scripts/train_foundry.py): knows the welding shield / thermal apron / work gloves
+    // that the generic SH17 model mistakes for missing gear. Runs beside SH17 as extra evidence (see FOUNDRY_AS_SH17).
+    foundry: { dir: 'assets/models/foundry_n', size: 640, onnx: true, names: ['person', 'hard-hat', 'welding-shield', 'hi-vis-vest', 'thermal-apron', 'work-gloves', 'n95-mask', 'safety-glasses', 'safety-boots', 'bare-head', 'bare-hands'], label: 'YOLOv8n · EGIC foundry gear (site-trained)' }
   };
+  // foundry gear → the SH17 class it proves, so analyzePPE counts it as worn; only POSITIVE gear (never the bare-* states)
+  var FOUNDRY_AS_SH17 = { 'hard-hat': 'helmet', 'welding-shield': 'face-guard', 'hi-vis-vest': 'safety-vest', 'thermal-apron': 'safety-suit', 'work-gloves': 'gloves', 'n95-mask': 'face-mask', 'safety-glasses': 'glasses' };
 
   var models = {}, loading = {};
   var basePath = '';
@@ -602,7 +607,7 @@
   PlateVoter.prototype.reset = function () { this.reads = []; };
 
   return {
-    setTF: setTF, getTF: getTF, setBase: setBase, load: load, loaded: loaded, register: register, warmup: warmup, run: run, REGISTRY: REGISTRY,
+    setTF: setTF, getTF: getTF, setBase: setBase, load: load, loaded: loaded, register: register, warmup: warmup, run: run, REGISTRY: REGISTRY, FOUNDRY_AS_SH17: FOUNDRY_AS_SH17,
     analyzePPE: analyzePPE, analyzePPEHF: analyzePPEHF, Tracker: Tracker, analyzePose: analyzePose, SKELETON: SKELETON,
     assemblePlate: assemblePlate, PlateVoter: PlateVoter, PPE_CONF: PPE_CONF, iou: iou, ioa: ioa, nms: nms, AR_DIGITS: AR_DIGITS,
     matchFaces: matchFaces, nearestOther: nearestOther, mergeFaceBoxes: mergeFaceBoxes, faceDist: faceDist, FACE_MATCH: FACE_MATCH,
