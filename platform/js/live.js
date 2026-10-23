@@ -924,7 +924,7 @@
         U.openModal('ضيف كاميرا / عدسة للشاشة المقسّمة', box);
       }).catch(function () { U.toast('تعذر جلب الكاميرات', '', { kind: 'critical' }); });
     }
-    U.onCleanup(hideSecond);
+    U.onCleanup(function () { feeds.slice().forEach(removeFeed); });
     var camSel = h('select', { class: 'select', style: { minWidth: '180px' } }, h('option', { value: '', text: 'الكاميرا الافتراضية' }));
     listCams().then(function (ds) { ds.forEach(function (d, i) { camSel.appendChild(h('option', { value: d.deviceId, text: d.label || ('كاميرا ' + (i + 1)) })); }); });
     var stopBtn = h('button', { class: 'btn', onclick: stop }, U.icon('stop'), 'إيقاف');
