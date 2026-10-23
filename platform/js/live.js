@@ -796,7 +796,13 @@
       h('div', { style: { width: '64px', height: '64px', margin: '0 auto', borderRadius: '18px', display: 'grid', placeItems: 'center', background: 'rgba(43,161,96,.16)', color: 'var(--green-hi)' } }, U.icon('live')),
       h('h3', { text: 'ابدأ الكشف المباشر' }),
       h('p', { text: 'قف أمام الكاميرا. النظام هيشوف الخوذة والنظارة والسترة والقفازات وسماعات الأذن. لو حاجة ناقصة بوضوح لمدة 5 ثواني، هياخد لقطة ويبعتها للمشرف يراجعها.' }),
-      h('div', { class: 'row' }, h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } })))));
+      h('div', { class: 'row' }, h('button', { class: 'btn btn--accent', onclick: function () { startCamera(); } }, U.icon('play'), 'تشغيل الكاميرا'), h('button', { class: 'btn', onclick: function () { pairPhone(startPhone); } }, '📱 كاميرا الموبايل'), h('button', { class: 'btn', onclick: function () { ipCamDialog(startIpCam); } }, '🌐 كاميرا IP'), h('label', { class: 'btn' }, U.icon('upload'), 'صورة / فيديو', h('input', { type: 'file', accept: 'image/*,video/*', style: { display: 'none' }, onchange: function (e) { if (e.target.files[0]) startFile(e.target.files[0]); } }))),
+      h('div', { class: 'muted', style: { marginTop: '14px', fontSize: '12.5px' }, text: 'أو جرّب على صورة من المصنع — دوس عليها والموديلز هتشتغل عليها:' }),
+      h('div', { style: { display: 'flex', gap: '8px', justifyContent: 'center', flexWrap: 'wrap', marginTop: '8px' } },
+        [['assets/samples/factory/foundry-worker.jpg', 'عامل عند الفرن'], ['assets/samples/factory/foundry-wide.jpg', 'الصالة (عمال بعيدين)']].map(function (s) {
+          return h('button', { type: 'button', class: 'btn btn--sm', style: { padding: '4px', overflow: 'hidden', height: 'auto' }, title: s[1], onclick: function () { startSample(s[0]); } },
+            h('img', { src: s[0], alt: s[1], loading: 'lazy', style: { width: '120px', height: '80px', objectFit: 'cover', borderRadius: '8px', display: 'block' } }));
+        }))));
     var loading = h('div', { class: 'lab-loading hidden' }, h('div', { class: 'box' }, h('div', { class: 'spinner' }), h('div', { style: { marginTop: '14px', fontWeight: 600 }, id: 'ldT', text: 'تحميل النماذج…' }), h('div', { class: 'bar' }, h('i', { id: 'ldBar' })), h('div', { class: 'muted mono', style: { fontSize: '11px' }, id: 'ldS', text: '' })));
     var stage = h('div', { class: 'lab-stage' }, canvas, video, img, phoneImg, phoneVid, h('div', { class: 'lab-hud' }, hudL, hudR), h('div', { class: 'lab-brand' }, h('div', { class: 'powered' }, h('span', { class: 'dot' }), 'POWERED BY ', h('b', { text: 'DELMON' }), h('span', { class: 'amp', text: '&' }), h('b', { text: 'DEV SMART X' }))), empty, loading);
     // second lens / camera with its OWN light AI pipeline (PPE + fall), drawn beside the main one
@@ -1142,6 +1148,13 @@
         img.onload = function () { st.src = img; st.srcKind = 'image'; st.running = true; st.tracker = null; loop(); };
         img.src = st.url;
       }
+    }
+    // run the models on a sample image shipped with the platform (same path as an uploaded image)
+    function startSample(url) {
+      stopSources(); empty.classList.add('hidden'); prepareModels();
+      img.onload = function () { st.src = img; st.srcKind = 'image'; st.running = true; st.tracker = null; loop(); };
+      img.onerror = function () { empty.classList.remove('hidden'); U.toast('تعذّر تحميل الصورة', url, { kind: 'critical' }); };
+      img.src = url + '?t=' + Date.now();
     }
     function stopSources() { hidePtz(); if (st.srcKind === 'phone' || st.srcKind === 'ipcam') detachPhone(st, phoneVid, phoneImg); st.ipcam = null; st.running = false; stopStream(st.stream); st.stream = null; try { video.pause(); } catch (e) { } video.removeAttribute('src'); video.srcObject = null; if (st.url) { URL.revokeObjectURL(st.url); st.url = null; } st.srcKind = null; st.last = null; st.pose = null; st.startedAt = 0; st.inferEMA = 0; st.lastInfer = 0; st.lastFaceT = 0; st.faces = []; }
     function stop() { stopSources(); empty.classList.remove('hidden'); var g = canvas.getContext('2d'); g.fillStyle = '#020403'; g.fillRect(0, 0, canvas.width, canvas.height); }
