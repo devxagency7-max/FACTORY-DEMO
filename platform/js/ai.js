@@ -267,7 +267,10 @@
   function analyzePPE(dets, W, H) {
     var by = {}; dets.forEach(function (d) { (by[d.label] = by[d.label] || []).push(d); });
     var persons = (by.person || []).slice();
-    var heads = by.head || [], faces = by.face || [], helmets = by.helmet || [], glasses = by.glasses || [], vests = (by['safety-vest'] || []).concat(by['safety-suit'] || []);
+    // head protection = a hard hat OR a welding/thermal face-guard (this foundry: either one counts, not both)
+    var heads = by.head || [], faces = by.face || [], helmets = (by.helmet || []).concat(by['face-guard'] || []), glasses = by.glasses || [];
+    // body protection = a hi-vis vest OR an apron / coverall (safety-suit / medical-suit)
+    var vests = (by['safety-vest'] || []).concat(by['safety-suit'] || []).concat(by['medical-suit'] || []);
     var gloves = by.gloves || [], hands = by.hands || [], muffs = by['ear-mufs'] || [], ears = by.ear || [];
     // People without a person box (close-up webcam): synthesise one from head/face
     var anchors = heads.length ? heads : faces;
