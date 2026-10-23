@@ -199,6 +199,13 @@
         h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, sevBadge(e.sev), reviewBadge(e.review) || statusBadge(e.status), h('span', { class: 'chip', text: (ENG.GROUP_AR[e.group] || e.group) }), e.missing && e.missing.length > 1 ? h('span', { class: 'chip', text: 'حادثة مجمّعة: ' + e.missing.length + ' عناصر' }) : null),
         e.review === 'PENDING' ? h('div', { class: 'card', style: { padding: '10px 14px', fontSize: '13px', lineHeight: '1.8', borderColor: 'rgba(247,146,36,.5)' } }, 'ده كشف من النظام، ', h('b', { text: 'لسه مش مخالفة' }), '. مش هيتحسب على أي عامل غير لما مشرف يراجع الدليل ويأكده باسمه.') : null,
         e.review == null && e.source && String(e.source).indexOf('live') === 0 ? h('div', { class: 'muted', style: { fontSize: '12.5px' }, text: 'تنبيه سلامة: بيستدعي تدخل سريع، ومش بيتسجل كمخالفة على أي عامل.' }) : null,
+        // the AI referee's second opinion (vision model judging by the foundry's gear rules) — a hint, the supervisor decides
+        e.referee ? (function (r) {
+          var V = { false_alarm: ['إنذار غلط — اتقفل تلقائيًا', '#45D48C'], real: ['المخالفة باينة في الصورة', '#ff7b7b'], unclear: ['مش متأكد — محتاج عين المشرف', '#FAB219'] }[r.verdict] || [r.verdict, '#8aa'];
+          return h('div', { class: 'card', style: { padding: '10px 14px', fontSize: '13px', lineHeight: '1.8', borderColor: V[1] } },
+            h('b', { style: { color: V[1] } }, '🤖 الحَكَم الآلي: ' + V[0]), r.reason ? h('div', { text: r.reason }) : null,
+            h('div', { class: 'muted', style: { fontSize: '11.5px' }, text: 'رأي موديل رؤية بقواعد زي المصنع (درع اللحام = حماية راس، المريلة = حماية جسم). القرار النهائي للمشرف' + (r.verdict === 'false_alarm' ? ' — تقدر تعيد فتح الحدث لو شايفه غلط.' : '.') }));
+        })(e.referee) : null,
         h('dl', { class: 'kv' },
           h('dt', { text: 'رقم الحدث' }), h('dd', { class: 'mono', text: e.id }),
           h('dt', { text: 'المخالفة' }), h('dd', { text: e.typeAr + ' · ' + e.typeEn }),

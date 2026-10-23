@@ -86,6 +86,84 @@ function journal(kind, payload) {
   try { fs.appendFileSync(REGISTRY_KINDS.has(kind) ? REGISTRY : JOURNAL, JSON.stringify({ kind, ts: Date.now(), payload }) + '\n'); } catch (e) { /* non-fatal */ }
 }
 
+// ---- AI referee: a vision LLM (OpenRouter) re-judges every PPE alarm by THIS foundry's gear rules before it can land
+// on a worker. A clear "false alarm" (e.g. a welding shield read as "no helmet") is closed automatically — reopenable
+// by any supervisor; "real" / "unclear" stay pending for a human, with the referee's note attached. The referee's
+// decisions are NOT written to the training reviews (only a human's are ground truth).
+// REFEREE=auto (default when a key exists) | note (annotate only) | off. Key: OPENROUTER_API_KEY or the repo's .env.
+const REFEREE_TYPES = new Set(['NO_HELMET', 'NO_VEST', 'NO_GLOVES', 'NO_GLASSES', 'NO_EARMUFFS']);
+const REFEREE_WHAT = { NO_HELMET: 'the worker has NO head protection', NO_VEST: 'the worker has NO body protection (no vest / apron)', NO_GLOVES: 'the worker has NO gloves', NO_GLASSES: 'the worker has NO safety glasses', NO_EARMUFFS: 'the worker has NO ear protection' };
+const REFEREE_POLICY = 'Compliant protective gear in THIS brass foundry:\n'
+  + '- head: a hard hat OR a welding / face shield of any kind worn on the head (black, green-tinted or clear; flipped up still counts)\n'
+  + '- body: a hi-vis vest OR an aluminized silver thermal apron OR a heavy leather/cloth work apron OR a coverall\n'
+  + '- hands: any work gloves (leather, cloth, striped)\n'
+  + '- eyes: safety glasses OR a face shield covering the eyes\n'
+  + '- ears: ear muffs or ear plugs\n';
+function openRouterKey() {
+  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
+  for (const f of [path.join(ROOT, '..', '.env'), path.join(ROOT, '.env')]) {
+    try { const m = /^OPENROUTER_API_KEY=(.+)$/m.exec(fs.readFileSync(f, 'utf8')); if (m) return m[1].trim(); } catch (e) { /* no file */ }
+  }
+  return null;
+}
+const REFEREE_KEY = openRouterKey();
+const REFEREE_MODE = process.env.REFEREE || (REFEREE_KEY ? 'auto' : 'off');
+const REFEREE_MODEL = process.env.REFEREE_MODEL || 'google/gemini-2.5-flash';
+const refereeFrames = new Map(); // incident → raw frame data URL (sibling events of one incident share the frame)
+let refereeBusy = 0, refereeWindow = [];
+function refereeImage(ev, learn) {
+  if (learn && learn.frame) return learn.frame;
+  if (ev.incident && refereeFrames.has(ev.incident)) return refereeFrames.get(ev.incident).frame;
+  const f = ev.evidence && ev.evidence.image && path.join(EVID, path.basename(ev.evidence.image)); // fallback: the annotated snapshot
+  try { return 'data:image/jpeg;base64,' + fs.readFileSync(f).toString('base64'); } catch (e) { return null; }
+}
+async function askReferee(image, alarm) {
+  const prompt = `An automated camera system in a brass FOUNDRY raised this alarm on the photo: "${REFEREE_WHAT[alarm] || alarm}".\n`
+    + REFEREE_POLICY
+    + 'Look at the worker(s) in the photo. Is the alarm TRUE for at least one clearly visible worker, judged by the foundry rules above? '
+    + 'If the relevant body part is not clearly visible, answer unclear — never guess.\n'
+    + 'Answer ONLY JSON: {"verdict": "real" | "false_alarm" | "unclear", "reason": "<one short sentence in Arabic>"}';
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 45000);
+  try {
+    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST', signal: ctl.signal,
+      headers: { Authorization: 'Bearer ' + REFEREE_KEY, 'Content-Type': 'application/json', 'X-Title': 'EGIC PPE referee' },
+      body: JSON.stringify({ model: REFEREE_MODEL, temperature: 0, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }] })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const txt = (await r.json()).choices[0].message.content || '';
+    const m = /\{[\s\S]*\}/.exec(txt); const j = m ? JSON.parse(m[0]) : {};
+    return { verdict: ['real', 'false_alarm', 'unclear'].includes(j.verdict) ? j.verdict : 'unclear', reason: String(j.reason || ''), model: REFEREE_MODEL };
+  } finally { clearTimeout(t); }
+}
+// an internal event action — same path + journal as a supervisor's, but never counted as a training review
+function internalAction(id, body) {
+  const pathname = '/api/v1/events/' + id + '/action';
+  const out = engine.handle('POST', pathname, {}, body);
+  if (out.status === 200) { const j = engine.journalEntry(pathname, body, out.body); if (j) journal(j[0], j[1]); }
+  return out;
+}
+function refereeEvent(ev, learn) {
+  if (REFEREE_MODE === 'off' || !REFEREE_KEY || !ev || !REFEREE_TYPES.has(ev.type)) return;
+  if (ev.incident && learn && learn.frame) refereeFrames.set(ev.incident, { frame: learn.frame, t: Date.now() });
+  // a little delay so the sibling event that carries the raw frame has arrived; cap the rate so a glitch can't run up a bill
+  setTimeout(async () => {
+    const now = Date.now();
+    refereeWindow = refereeWindow.filter((t) => now - t < 60000);
+    if (refereeBusy >= 3 || refereeWindow.length >= 40) return log(C.y + '● REFEREE' + C.x, C.dim + 'skipped (rate cap) ' + ev.id + C.x);
+    const image = refereeImage(ev, learn); if (!image) return;
+    refereeBusy++; refereeWindow.push(now);
+    try {
+      const v = await askReferee(image, ev.type);
+      internalAction(ev.id, { action: 'referee', referee: v });
+      if (v.verdict === 'false_alarm' && REFEREE_MODE === 'auto') internalAction(ev.id, { action: 'false_positive', actor: 'الحَكَم الآلي (AI)', note: v.reason });
+      log(C.c + '● REFEREE' + C.x, ev.type, '→', (v.verdict === 'false_alarm' ? C.g : v.verdict === 'real' ? C.r : C.y) + v.verdict + C.x, C.dim + ev.id + ' · ' + v.reason.slice(0, 80) + C.x);
+    } catch (e) { log(C.y + '● REFEREE' + C.x, C.dim + 'error ' + ev.id + ' · ' + e.message + C.x); }
+    finally { refereeBusy--; }
+    for (const [k, f] of refereeFrames) if (Date.now() - f.t > 120000) refereeFrames.delete(k);
+  }, 1500);
+}
+
 // The learning notebook for the browser models: save the RAW frame + its detection boxes behind an alarm, keyed by the
 // event id. scripts/learn.py pairs it with the supervisor's confirm / "false alarm" (REVIEWS_FILE) to train a student.
 const LEARN_EVENTS_DIR = path.join(DATA, 'learning', 'events');
@@ -590,6 +668,8 @@ async function api(req, res, pathname, query) {
     }
     // keep the big raw training frame out of the journal/engine; it is saved to the learning notebook after the id is known
     if (pathname === '/api/v1/events' && body.learn) { req._learn = body.learn; delete body.learn; }
+    // the referee's note can only come from this server, never from a browser
+    if (/^\/api\/v1\/events\/[^/]+\/action$/.test(pathname) && body.action === 'referee') return send(res, 403, { error: 'referee_is_server_only' });
     if (pathname === '/api/v1/gate/log') {
       if (body.image) body.image = saveDataUrl(body.image, 'veh_' + Date.now()) || null;
       if (body.plateImage) body.plateImage = saveDataUrl(body.plateImage, 'plate_' + Date.now()) || null;
@@ -613,6 +693,7 @@ async function api(req, res, pathname, query) {
     if (j) journal(j[0], j[1]);
     // save the raw frame behind a live alarm into the learning notebook, keyed by the event id
     if (pathname === '/api/v1/events' && out.body && req._learn) saveLearnEvent(out.body.incident || out.body.id, req._learn);
+    if (pathname === '/api/v1/events' && out.body) refereeEvent(out.body, req._learn); // second opinion on PPE alarms
     // the supervisor's decision on an AI detection (engine OR live lab) = the ground truth the AI student learns from
     if (/^\/api\/v1\/events\/[^/]+\/action$/.test(pathname) && out.body && /^(ai-engine|live-)/.test(out.body.source || '') && (out.body.incident || out.body.id)) {
       try { fs.appendFileSync(REVIEWS_FILE, JSON.stringify({ incident: out.body.incident || out.body.id, type: out.body.type, review: out.body.review, status: out.body.status, reviewer: out.body.reviewer || null, ts: Date.now() }) + '\n'); } catch (e) { /* non-fatal */ }
@@ -685,7 +766,8 @@ server.listen(PORT, HOST, () => {
   if (httpsServer) lanAddresses().forEach((ip) => console.log('  ● Phone camera (HTTPS) ' + C.c + 'https://' + ip + ':' + HTTPS_PORT + '/phone.html' + C.x));
   console.log('  ● IP cameras           ' + C.dim + ipcams.size + ' saved · RTSP via ' + FFMPEG + C.x);
   console.log('  ● Live video           ' + (STREAM.available ? C.g + 'WebRTC (go2rtc)' + C.x + C.dim + ' · AI re-stream rtsp://127.0.0.1:8554/<camera>' + C.x : C.y + 'go2rtc not found — JPEG fallback only (put go2rtc.exe in platform/bin)' + C.x));
-  console.log('  ● Mode                 ' + (DEMO ? C.y + 'DEMO (simulated data) — set EGIC_DEMO=0 in the factory' + C.x : C.g + 'FACTORY (real data only)' + C.x));
+  console.log('  ● AI referee           ' + (REFEREE_MODE === 'off' || !REFEREE_KEY ? C.dim + 'off (no OpenRouter key)' + C.x : C.g + REFEREE_MODE + C.x + C.dim + ' · ' + REFEREE_MODEL + ' re-judges PPE alarms by the foundry gear rules' + C.x));
+  console.log('  ● Mode                 ' + (DEMO ?C.y + 'DEMO (simulated data) — set EGIC_DEMO=0 in the factory' + C.x : C.g + 'FACTORY (real data only)' + C.x));
   console.log('  ● Engine               ' + C.g + 'ONLINE' + C.x + C.dim + '  (' + engine.events.length + ' events · ' + engine.gateLog.length + ' gate reads · ' + engine.workers.length + ' employees' + (replayed ? ' · ' + replayed + ' live records restored' : '') + ')' + C.x);
   console.log('');
   console.log(C.dim + '  Demo environment — simulated data is clearly labelled. Press Ctrl+C to stop.' + C.x);

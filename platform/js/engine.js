@@ -1056,9 +1056,15 @@
       e.status = 'OPEN'; e.resTs = null;
       if (reviewable) { if (e.review === 'CONFIRMED') this.countViolation(e, -1); e.review = 'PENDING'; e.reviewer = null; e.reviewTs = null; e.reviewNote = ''; }
     }
+    else if (action === 'referee') {
+      // the AI referee's second opinion (vision LLM judging by the foundry's gear rules) — a note, never a human review
+      var rf = body.referee || {};
+      e.referee = { verdict: String(rf.verdict || 'unclear'), reason: String(rf.reason || '').slice(0, 300), model: rf.model || null, ts: now };
+    }
     if (body.note && action !== 'confirm' && action !== 'false_positive') e.note = body.note;
     var w = e.workerId ? this.workerById[e.workerId] : null;
     var what = action === 'confirm' ? 'تأكيد مخالفة على ' + (w ? w.name : '—')
+      : action === 'referee' ? 'الحَكَم الآلي: ' + ({ false_alarm: 'إنذار غلط', real: 'المخالفة باينة', unclear: 'مش متأكد' }[e.referee.verdict] || e.referee.verdict)
       : action === 'set_worker' ? 'تحديد العامل: ' + (w ? w.name : 'بدون')
       : 'تحديث حالة حدث (' + before + ' → ' + e.status + (beforeReview !== e.review ? ' · ' + (REVIEW_AR[e.review] || '') : '') + ')';
     this.logAudit(actor || 'مدير السلامة (HSE Admin)', what, id);
